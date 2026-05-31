@@ -531,9 +531,9 @@ public:
     //     既不检测包名、也不去重——无论新 App 是不是默认模式都覆盖一遍。它与同样监听切换的
     //     appProfileTask 是两条独立线程, 快速连切时两边各写一轮(含两次 hotplug), 且此处的
     //     currentMatch 尚未更新, 还会先错误地应用上一个 App 的画像 → 顿挫。
-    //   现在: appProfileTask 先检测包名, 经 240ms 尾沿防抖后只在"匹配画像确实变化"时写一次;
+    //   现在: appProfileTask 先检测包名, 经 300ms 尾沿防抖后只在"匹配画像确实变化"时写一次;
     //     新包名匹配到当前默认模式(或与当前同画像)则直接跳过, 不再覆盖。游戏等非默认画像
-    //     的高频在进入时由画像自身写入(240ms 内), 无需此处再做盲 boost。
+    //     的高频在进入时由画像自身写入(300ms 内), 无需此处再做盲 boost。
     void cpuSetTriggerTask() {
         return;
     }
@@ -623,7 +623,7 @@ public:
         //   本线程是前台切换写频率的唯一入口(cpuSetTriggerTask 的盲写已退役): 先检测包名, 仅在
         //   匹配画像确实变化时才写; 新包名匹配到当前默认模式/同画像则跳过, 不重复覆盖。
         constexpr int kPollIdleMs  = 4000;  // 回退轮询 / inotify 空闲复查间隔
-        constexpr int kQuietMs     = 240;   // 安静窗口: 无新切换事件持续这么久即视为已落定
+        constexpr int kQuietMs     = 300;   // 安静窗口: 无新切换事件持续这么久即视为已落定
         constexpr int kMaxDeferMs  = 1200;  // 硬上限: 持续不断的事件也保证最终生效, 不无限顺延
 
         int fd = inotify_init1(IN_CLOEXEC);
