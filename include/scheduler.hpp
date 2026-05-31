@@ -549,12 +549,6 @@ public:
 
         logger.Info("场景画像监控线程已启动 (轻量取包名优先, 支持通配符匹配)");
 
-        // [优化] 轮询/切换相关时间常量
-        //   kPollIdleMs   : 前台未变化时的轮询间隔(调长省电,代价是切档最多延迟这么久)
-        //   kSwitchSettleMs: 检测到新前台后的"沉降"延迟,避开冷启动/切换动画最忙的瞬间
-        constexpr int kPollIdleMs    = 4000;   // v4.7: 3s -> 4s
-        constexpr int kSwitchSettleMs = 250;
-
         while (true) {
             // 熄屏时降低检测频率
             if (scene_.current() == SceneDetector::Scene::Standby) {
@@ -562,32 +556,18 @@ public:
                 continue;
             }
 
-            // [优化] 轻量路径取前台(读 cpuset+cmdline,无 dumpsys/fork 开销)
+            // [优化] 优先轻量路径(读 cpuset+cmdline,无 dumpsys 开销);
+            //        getTopApp 内部已是 "fast 优先, dumpsys 兜底"。
             std::string pkg = utils.getTopAppCached(2500);
             if (pkg.empty() || pkg == "null") {
-                utils.sleep_ms(kPollIdleMs);
+                utils.sleep_ms(3000);
                 continue;
             }
 
             // 包名未变化，跳过
             if (pkg == lastTopApp) {
-                utils.sleep_ms(kPollIdleMs);
+                utils.sleep_ms(3000);   // v4.3: 2s -> 3s (省电)
                 continue;
-            }
-
-            // [优化] 前台切换沉降 + 连切合并(解决"切应用/开 App 卡顿"):
-            //   检测到新前台后不立刻写 sysfs。冷启动/切换动画那一下 CPU 最忙,此时写
-            //   scaling_governor / 在线核(hotplug) 会与启动争抢、瞬间掉频,正是卡顿来源。
-            //   先等 kSwitchSettleMs 让最忙阶段过去,再复核前台:若期间又切了别的 App,
-            //   本次直接放弃(不更新 lastTopApp,下一轮以最新前台为准),从而合并连续快速
-            //   切换,避免来回刷频。
-            utils.sleep_ms(kSwitchSettleMs);
-            {
-                std::string confirm = utils.getTopAppFast();
-                if (!confirm.empty() && confirm != pkg) {
-                    // 沉降期间又切换 → 跳过本次,下轮重新评估最新前台
-                    continue;
-                }
             }
 
             // 包名变化，使用通配符查找匹配的场景画像

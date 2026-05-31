@@ -245,11 +245,32 @@ public:
     }
 
     string getTopApp() {
-        // [优化] 只走轻量路径(读 cpuset+cmdline,纯文件读,无 fork/exec)。
-        //   原 dumpsys 兜底是 popen(fork+exec shell,100~300ms),若正好在前台切换瞬间
-        //   触发会与 App 冷启动争抢 CPU,表现为"切应用/开 App 卡顿"。现去掉兜底:
-        //   fast 读不到(极少见)直接返回空,调用方下一轮重试——宁可漏一次切档也不卡。
-        return getTopAppFast();
+        // [优化] 先走轻量路径(读 cpuset+cmdline,纯文件读); 失败再回退 dumpsys。
+        //   注: 新内核(8E5/Android 15 等)对读别的进程 /proc/<pid>/cmdline 有
+        //   SELinux/权限限制, 轻量路径可能拿不到前台 → 必须保留 dumpsys 兜底,
+        //   否则前台检测彻底失效(画像永不切换)。dumpsys 仅在 fast 失败时才调用,
+        //   且上层 getTopAppCached 已做 TTL 节流, 不会高频 fork。
+        string fast = getTopAppFast();
+        if (!fast.empty()) return fast;
+
+        char data[256] = { 0 };  // Fix: 初始化，防止 popen 失败时读垃圾内存
+        popenShell("dumpsys window | grep mCurrentFocus", data, sizeof(data));
+        if (strstr(data, "mCurrentFocus=null")) return "null";
+
+        // Fix: strstr/strchr 返回 nullptr 时直接 +offset 会 segfault，必须先判空
+        const char* u0pos = strstr(data, "u0");
+        if (!u0pos) return "null";
+        const char* ptr = u0pos + 3;
+
+        const char* end_pos = strchr(ptr, '/');
+        if (!end_pos) return "null";
+
+        char temp[256];
+        ptrdiff_t len = end_pos - ptr;
+        if (len <= 0 || len >= (ptrdiff_t)sizeof(temp)) return "null";
+        memcpy(temp, ptr, len);
+        temp[len] = '\0';
+        return string(temp);
     }
 
     // [新增 v4.3] 带 TTL 缓存的 getTopApp，省电关键
