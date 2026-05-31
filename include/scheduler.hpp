@@ -600,9 +600,12 @@ public:
         return 1;                          // 有事件
     }
 
-    // 取前台并按需切换画像。返回值仅用于内部; 检测/应用逻辑与原轮询版一致。
-    void evalForegroundOnce() {
-        std::string pkg = utils.getTopAppCached(2500);
+    // 取前台并按需切换画像。
+    //   fresh=true: 强制取最新前台(事件驱动路径必须用,否则 getTopAppCached 的 TTL
+    //   缓存会返回切换前的旧包名 → 误判"未变化"跳过 → 表现为检测延迟很高)。
+    //   fresh=false: 允许用缓存(空闲复查/熄屏等低频路径,省电)。
+    void evalForegroundOnce(bool fresh) {
+        std::string pkg = fresh ? utils.getTopApp() : utils.getTopAppCached(2500);
         if (pkg.empty() || pkg == "null") return;
         if (pkg == lastTopApp) return;
 
@@ -633,9 +636,11 @@ public:
         //   收益: 切换响应即时、空闲零唤醒(省电)。inotify 不可用时自动回退到轮询。
         //   防抖: 收到事件后等 kSettleMs 让冷启动/切换动画最忙的瞬间过去, 再取前台并写频率,
         //         避免与 App 启动争抢 CPU 造成顿挫; 同时把短时间内的连续事件合并成一次评估。
-        constexpr int kSettleMs   = 220;    // 切换沉降(防抖)
-        constexpr int kReWaitMs   = 80;     // 沉降期内若又来事件, 再延一小段, 合并连切
-        constexpr int kPollIdleMs = 4000;   // 回退轮询 / inotify 空闲复查间隔
+        // [v4.7+ 调优] 事件来了要快; 防抖只为吸掉切换瞬间的抖动, 不能拖成"延迟高"。
+        constexpr int kSettleMs    = 60;    // 切换沉降(只压一下抖动, 尽量快)
+        constexpr int kReWaitMs    = 40;    // 沉降期内若又来事件, 再延一小段合并连切
+        constexpr int kMaxSettleMs = 300;   // 合并最长时间上限, 防止 App 启动期事件刷屏导致无限延后
+        constexpr int kPollIdleMs  = 4000;  // 回退轮询 / inotify 空闲复查间隔
 
         int fd = inotify_init1(IN_CLOEXEC);
         int wd = -1;
@@ -647,8 +652,8 @@ public:
             ? "场景画像监控线程已启动 (事件驱动: 监听 top-app 切换, 支持通配符匹配)"
             : "场景画像监控线程已启动 (inotify 不可用, 回退轮询; 支持通配符匹配)");
 
-        // 启动时先评估一次当前前台
-        evalForegroundOnce();
+        // 启动时先评估一次当前前台(强制取最新)
+        evalForegroundOnce(true);
 
         while (true) {
             // 熄屏时降低活动频率(省电); 此时不阻塞监听, 定期轻量复查
@@ -661,21 +666,24 @@ public:
             if (ev < 0) {
                 // inotify 出错 → 退化为纯轮询, 避免线程空转占 CPU
                 utils.sleep_ms(kPollIdleMs);
-                evalForegroundOnce();
+                evalForegroundOnce(true);
                 continue;
             }
             if (ev == 0) {
-                // 超时无事件: 仍轻量复查一次(覆盖个别 ROM 不触发 cpuset 事件的情况)
-                evalForegroundOnce();
+                // 超时无事件: 轻量复查一次(可用缓存, 覆盖个别 ROM 不触发 cpuset 事件的情况)
+                evalForegroundOnce(false);
                 continue;
             }
 
-            // 收到切换事件 → 防抖沉降: 期间继续吸收后续事件, 合并连切为一次评估
+            // 收到切换事件 → 短暂沉降吸抖, 期间继续吸收后续事件合并连切(带总时长上限)
             utils.sleep_ms(kSettleMs);
-            while (waitTopAppEvent(fd, wd, kReWaitMs) == 1) {
+            int waited = kSettleMs;
+            while (waited < kMaxSettleMs && waitTopAppEvent(fd, wd, kReWaitMs) == 1) {
                 utils.sleep_ms(kReWaitMs);
+                waited += kReWaitMs;
             }
-            evalForegroundOnce();
+            // 事件驱动: 必须强制取最新前台(不能用 TTL 缓存, 否则拿到旧包名 → 检测延迟)
+            evalForegroundOnce(true);
         }
     }
 
