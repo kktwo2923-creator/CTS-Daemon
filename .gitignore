@@ -1,34 +1,32 @@
-# Gradle files
-.gradle/
+# Build artifacts
 build/
+output/
+obj/
+libs/
+*.o
+*.a
+*.so
+*.bak
+*.tmp
+*.swp
+*~
+# 预编译产物：由 CI / build.sh 生成，不纳入版本控制
+/CoreTurboScheduler
 
-# Local configuration file (sdk path, etc)
-local.properties
-
-# Log/OS Files
-*.log
-
-# Android Studio generated files and folders
-captures/
-.externalNativeBuild/
-.cxx/
-*.aab
-*.apk
-output-metadata.json
-
-# IntelliJ
-*.iml
+# IDE
+.vscode/
 .idea/
-misc.xml
-deploymentTargetDropDown.xml
-render.experimental.xml
+*.iml
+.cxx/
 
-# Keystore files
-*.jks
-*.keystore
+# Python
+__pycache__/
+*.pyc
+*.pyo
 
-# Google Services (e.g. APIs or Firebase)
-google-services.json
-
-# Android Profiling
-*.hprof
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cbp
