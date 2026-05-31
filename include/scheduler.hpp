@@ -632,12 +632,19 @@ public:
     void appProfileTask() {
         sleep(5); // 等待系统启动完成
 
-        // [v4.7+] 事件驱动: 阻塞监听 top-app cpuset 变动(前台切换), 替代固定轮询。
-        //   收益: 切换毫秒级响应、空闲零唤醒(省电)。inotify 不可用时自动回退到轮询。
-        //   [最低延迟] 不做沉降 sleep —— 事件一来立即取最新前台并应用。waitTopAppEvent
-        //   内部 read() 已把队列里堆积的事件一次性清空(拿到 cgroup 最终状态而非中间态),
-        //   足以吸收 App 启动期的事件风暴; evalForegroundOnce 对包名未变会自动跳过, 幂等安全。
+        // [v4.7+] 事件驱动 + 尾沿防抖: 阻塞监听 top-app cpuset 变动(前台切换), 替代固定轮询。
+        //   收益: 切换响应快、空闲零唤醒(省电)。inotify 不可用时自动回退到轮询。
+        //
+        //   [关键] 检测(取包名)可以快; 但"重操作"(写 scaling_max/min、切核)绝不能每个事件都做。
+        //   快速连切 App 时若每切一次都重写频率+切核, 会与 App 启动争抢 CPU → 顿挫。
+        //   因此重操作走尾沿防抖: 收到切换事件后, 等前台"安静"kQuietMs(不再有新切换)才认为
+        //   已落定, 此时才取最新前台并应用一次。
+        //     - 单次切换:    约 kQuietMs 后生效(远快于旧 3s 轮询, 解决"检测慢")
+        //     - 快速连切:    持续顺延, 只在最终落定的那个 App 上写一次频率(不风暴, 不卡)
+        //   注: 即时"跟手"由独立的 cpuSetTriggerTask(LaunchBoost 轻量 boost)负责, 与此互补。
         constexpr int kPollIdleMs  = 4000;  // 回退轮询 / inotify 空闲复查间隔
+        constexpr int kQuietMs     = 240;   // 安静窗口: 无新切换事件持续这么久即视为已落定
+        constexpr int kMaxDeferMs  = 1200;  // 硬上限: 持续不断的事件也保证最终生效, 不无限顺延
 
         int fd = inotify_init1(IN_CLOEXEC);
         int wd = -1;
@@ -672,7 +679,14 @@ public:
                 continue;
             }
 
-            // 收到切换事件 → 立即取最新前台并应用(毫秒级, 无沉降延迟)
+            // 收到切换事件 → 尾沿防抖: 等前台安静下来再做重操作, 避免连切时频率写风暴
+            int deferred = 0;
+            while (deferred < kMaxDeferMs) {
+                int more = waitTopAppEvent(fd, wd, kQuietMs);
+                if (more <= 0) break;       // 安静窗口内无新事件(或超时/出错) → 已落定
+                deferred += kQuietMs;        // 又来切换事件 → 继续等它安静
+            }
+            // 前台已稳定 → 取最新前台并应用一次(强制取最新, 不用缓存)
             evalForegroundOnce(true);
         }
     }
