@@ -632,14 +632,11 @@ public:
     void appProfileTask() {
         sleep(5); // 等待系统启动完成
 
-        // [v4.7+] 事件驱动 + 防抖: 阻塞监听 top-app cpuset 变动(前台切换), 替代固定 3s 轮询。
-        //   收益: 切换响应即时、空闲零唤醒(省电)。inotify 不可用时自动回退到轮询。
-        //   防抖: 收到事件后等 kSettleMs 让冷启动/切换动画最忙的瞬间过去, 再取前台并写频率,
-        //         避免与 App 启动争抢 CPU 造成顿挫; 同时把短时间内的连续事件合并成一次评估。
-        // [v4.7+ 调优] 事件来了要快; 防抖只为吸掉切换瞬间的抖动, 不能拖成"延迟高"。
-        constexpr int kSettleMs    = 60;    // 切换沉降(只压一下抖动, 尽量快)
-        constexpr int kReWaitMs    = 40;    // 沉降期内若又来事件, 再延一小段合并连切
-        constexpr int kMaxSettleMs = 300;   // 合并最长时间上限, 防止 App 启动期事件刷屏导致无限延后
+        // [v4.7+] 事件驱动: 阻塞监听 top-app cpuset 变动(前台切换), 替代固定轮询。
+        //   收益: 切换毫秒级响应、空闲零唤醒(省电)。inotify 不可用时自动回退到轮询。
+        //   [最低延迟] 不做沉降 sleep —— 事件一来立即取最新前台并应用。waitTopAppEvent
+        //   内部 read() 已把队列里堆积的事件一次性清空(拿到 cgroup 最终状态而非中间态),
+        //   足以吸收 App 启动期的事件风暴; evalForegroundOnce 对包名未变会自动跳过, 幂等安全。
         constexpr int kPollIdleMs  = 4000;  // 回退轮询 / inotify 空闲复查间隔
 
         int fd = inotify_init1(IN_CLOEXEC);
@@ -675,14 +672,7 @@ public:
                 continue;
             }
 
-            // 收到切换事件 → 短暂沉降吸抖, 期间继续吸收后续事件合并连切(带总时长上限)
-            utils.sleep_ms(kSettleMs);
-            int waited = kSettleMs;
-            while (waited < kMaxSettleMs && waitTopAppEvent(fd, wd, kReWaitMs) == 1) {
-                utils.sleep_ms(kReWaitMs);
-                waited += kReWaitMs;
-            }
-            // 事件驱动: 必须强制取最新前台(不能用 TTL 缓存, 否则拿到旧包名 → 检测延迟)
+            // 收到切换事件 → 立即取最新前台并应用(毫秒级, 无沉降延迟)
             evalForegroundOnce(true);
         }
     }
