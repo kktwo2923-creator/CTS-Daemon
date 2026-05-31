@@ -525,39 +525,17 @@ public:
         return triggered;
     }
 
+    // [Fix] 已退役: 前台切换时的频率写入收归 appProfileTask 唯一负责。
+    //   原因(快速切 App 顿挫 + 默认模式被反复覆盖):
+    //     此线程原本在每个 top-app 切换事件都盲调 release() → applyWithProfile(含 hotplug),
+    //     既不检测包名、也不去重——无论新 App 是不是默认模式都覆盖一遍。它与同样监听切换的
+    //     appProfileTask 是两条独立线程, 快速连切时两边各写一轮(含两次 hotplug), 且此处的
+    //     currentMatch 尚未更新, 还会先错误地应用上一个 App 的画像 → 顿挫。
+    //   现在: appProfileTask 先检测包名, 经 240ms 尾沿防抖后只在"匹配画像确实变化"时写一次;
+    //     新包名匹配到当前默认模式(或与当前同画像)则直接跳过, 不再覆盖。游戏等非默认画像
+    //     的高频在进入时由画像自身写入(240ms 内), 无需此处再做盲 boost。
     void cpuSetTriggerTask() {
-        if (!LaunchBoost::enable) return;
-        constexpr int TRIGGER_BUF_SIZE = 8192;
-        sleep(1);
-
-        while (true) {
-            const int fd = inotify_init();
-            if (fd < 0) {
-                fprintf(stderr, "同步事件: 0xB1 (1/3)失败: [%d]:[%s]", errno, strerror(errno));
-                exit(-1);
-            }
-
-            const int wd = inotify_add_watch(fd, cpusetEventPath, IN_ALL_EVENTS);
-            
-            if (wd < 0) {
-                fprintf(stderr, "同步事件: 0xB1 (2/3)失败: [%d]:[%s]", errno, strerror(errno));
-                exit(-1);
-            }
-
-            logger.Info("监听顶层应用切换事件成功");
-
-            char buf[TRIGGER_BUF_SIZE];
-            while (read(fd, buf, TRIGGER_BUF_SIZE) > 0) {
-                cpuBoost = true;
-                release();
-                logger.Debug("前台进程已切换 已触发LaunchBoost");
-                utils.sleep_ms(500); // 防抖
-            }
-
-            inotify_rm_watch(fd, wd);
-            close(fd);
-
-        }
+        return;
     }
 
     // [v4.7 cleanup] 已移除整组场景识别线程（sceneTickTask / screenStateTask /
@@ -613,6 +591,7 @@ public:
         int newMatch = Config::AppProfile::findMatchingModel(pkg.c_str());
 
         // [Fix v4.1] currentMatch 是 atomic
+        // 去重: 新包名匹配到的画像与当前相同(含两者都是默认模式 -1)→ 不重复覆盖频率, 直接跳过。
         int oldMatch = Config::AppProfile::currentMatch.load();
         if (newMatch != oldMatch) {
             Config::AppProfile::currentMatch.store(newMatch);
@@ -641,7 +620,8 @@ public:
         //   已落定, 此时才取最新前台并应用一次。
         //     - 单次切换:    约 kQuietMs 后生效(远快于旧 3s 轮询, 解决"检测慢")
         //     - 快速连切:    持续顺延, 只在最终落定的那个 App 上写一次频率(不风暴, 不卡)
-        //   注: 即时"跟手"由独立的 cpuSetTriggerTask(LaunchBoost 轻量 boost)负责, 与此互补。
+        //   本线程是前台切换写频率的唯一入口(cpuSetTriggerTask 的盲写已退役): 先检测包名, 仅在
+        //   匹配画像确实变化时才写; 新包名匹配到当前默认模式/同画像则跳过, 不重复覆盖。
         constexpr int kPollIdleMs  = 4000;  // 回退轮询 / inotify 空闲复查间隔
         constexpr int kQuietMs     = 240;   // 安静窗口: 无新切换事件持续这么久即视为已落定
         constexpr int kMaxDeferMs  = 1200;  // 硬上限: 持续不断的事件也保证最终生效, 不无限顺延
