@@ -1,0 +1,20 @@
+--- a/include/JsonConfig.hpp
++++ b/include/JsonConfig.hpp
+@@ readConfig()
+-        LoadConfig();
+-        if (mode.empty())    { logger.Error("情景模式为空");                       return false; }
+-        if (!switchConfig()) { logger.Error("情景模式无效: '%s'", mode.c_str());   return false; }
+-        logger.Info("当前情景模式: %s", mode.c_str());
++        LoadConfig();
++        // mode.txt 是外部文件，可能被写入画像模型名(game_heavy/video 等)或非法值。
++        // 不再 return false 中止重载(会让守护拒绝应用、表现为崩溃循环)，
++        // 改为告警并回退安全基础档 balance。按 App 画像由 AppProfile 按包名处理。
++        if (mode.empty()) {
++            logger.Warn("情景模式为空，回退到 balance");
++            mode = "balance";
++        }
++        if (!switchConfig()) {
++            logger.Warn("情景模式无效: '%s'，回退到 balance", mode.c_str());
++            mode = "balance";
++        }
++        logger.Info("当前情景模式: %s", mode.c_str());
