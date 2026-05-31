@@ -407,16 +407,41 @@ public:
         }
     }
 
+    // 读取文件原始字节并返回内容哈希(0=读失败/空)。用于"内容未变则跳过重载":
+    //   外部(如 CTS App 的轮询)可能反复以相同内容回写 mode.txt/config.json,
+    //   每次 IN_CLOSE_WRITE 都触发一次整份 readConfig + applyAllConfig(全量刷 sysfs),
+    //   表现为"没切模式却每隔几秒重载一遍",造成周期性卡顿。内容去重可彻底消除这种空转。
+    size_t fileContentHash(const char* path) {
+        int fd = open(path, O_RDONLY | O_CLOEXEC);
+        if (fd < 0) return 0;
+        std::string data;
+        char tmp[4096];
+        ssize_t n;
+        while ((n = read(fd, tmp, sizeof(tmp))) > 0) data.append(tmp, (size_t)n);
+        close(fd);
+        if (data.empty()) return 0;
+        return std::hash<std::string>{}(data);
+    }
+
     void configTriggerTask() {
         sleep(2);
         const char* watchDir = "/sdcard/Android/CTS";
         const char* targetFile = "mode.txt";
+        const char* modeFilePath = "/sdcard/Android/CTS/mode.txt";
+        size_t lastHash = 0;
         while (true) {
             if (!watchFileInDir(watchDir, targetFile, IN_CLOSE_WRITE)) {
                 sleep(5); continue;
             }
+            // [防空转] mode.txt 内容与上次相同(被原值回写)→ 跳过整份重载,避免周期性刷 sysfs
+            size_t h = fileContentHash(modeFilePath);
+            if (h != 0 && h == lastHash) {
+                logger.Debug("mode.txt 内容未变,跳过重载");
+                continue;
+            }
             if (conf.readConfig()) {
                 applyAllConfig();
+                lastHash = h;
             } else {
                 logger.Warn("配置重载失败，跳过应用");
             }
@@ -430,14 +455,23 @@ public:
         sleep(2);
         const char* watchDir = "/sdcard/Android/CTS";
         const char* targetFile = "config.json";
+        const char* jsonFilePath = "/sdcard/Android/CTS/config.json";
+        size_t lastHash = 0;
         while (true) {
             if (!watchFileInDir(watchDir, targetFile, IN_CLOSE_WRITE)) {
                 sleep(5); continue;
+            }
+            // [防空转] config.json 内容与上次相同(被原值回写)→ 跳过整份重载
+            size_t h = fileContentHash(jsonFilePath);
+            if (h != 0 && h == lastHash) {
+                logger.Debug("config.json 内容未变,跳过重载");
+                continue;
             }
             if (conf.readConfig()) {
                 // [Fix v4.4] readConfig 内部已 setLogLevel，无需重复
                 function.ReloadFunC();   // [Fix v4.1] 用 ReloadFunC 而非 AllFunC（不重启守护线程）
                 applyAllConfig();
+                lastHash = h;
             } else {
                 logger.Warn("JSON 配置重载失败，跳过应用");
             }
@@ -544,54 +578,104 @@ public:
     //    - cpuSetTriggerTask: 快速检测应用切换（触发 AmSwitch 场景）
     //    - appProfileTask: 获取包名并匹配场景画像（频率策略）
     // ============================================================
+    // 阻塞等待 top-app cpuset 发生变动事件(前台 App 切换会改写该 cgroup)。
+    //   maxWaitMs: 最长阻塞时长; 期间有事件立即返回 true, 超时返回 false。
+    //   inotify 失败(返回 fd<0)时返回 -1, 调用方据此回退到轮询模式。
+    //   事件驱动相比定时轮询: 切换响应即时, 且空闲时线程完全休眠不耗电。
+    int waitTopAppEvent(int inotifyFd, int wd, int maxWaitMs) {
+        (void)wd;
+        if (inotifyFd < 0) return -1;
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        FD_SET(inotifyFd, &rfds);
+        struct timeval tv;
+        tv.tv_sec  = maxWaitMs / 1000;
+        tv.tv_usec = (maxWaitMs % 1000) * 1000;
+        int ret = select(inotifyFd + 1, &rfds, nullptr, nullptr, &tv);
+        if (ret < 0) return (errno == EINTR) ? 0 : -1;
+        if (ret == 0) return 0;            // 超时, 无事件
+        char buf[4096];
+        ssize_t n = read(inotifyFd, buf, sizeof(buf));   // 清空事件队列
+        (void)n;
+        return 1;                          // 有事件
+    }
+
+    // 取前台并按需切换画像。返回值仅用于内部; 检测/应用逻辑与原轮询版一致。
+    void evalForegroundOnce() {
+        std::string pkg = utils.getTopAppCached(2500);
+        if (pkg.empty() || pkg == "null") return;
+        if (pkg == lastTopApp) return;
+
+        lastTopApp = pkg;
+        int newMatch = Config::AppProfile::findMatchingModel(pkg.c_str());
+
+        // [Fix v4.1] currentMatch 是 atomic
+        int oldMatch = Config::AppProfile::currentMatch.load();
+        if (newMatch != oldMatch) {
+            Config::AppProfile::currentMatch.store(newMatch);
+            if (newMatch >= 0) {
+                logger.Info("前台应用切换: %s -> 匹配场景 '%s' (isGame=%d)",
+                            pkg.c_str(),
+                            Config::AppProfile::Models[newMatch].modelName.c_str(),
+                            Config::AppProfile::Models[newMatch].isGame ? 1 : 0);
+            } else {
+                logger.Info("前台应用切换: %s -> 无匹配场景画像", pkg.c_str());
+            }
+            // 应用新的频率策略(核心开关已在 applyAppProfile/restoreBaseCoresIfNeeded 内处理)
+            applyWithProfile(scene_.current());
+        }
+    }
+
     void appProfileTask() {
         sleep(5); // 等待系统启动完成
 
-        logger.Info("场景画像监控线程已启动 (轻量取包名优先, 支持通配符匹配)");
+        // [v4.7+] 事件驱动 + 防抖: 阻塞监听 top-app cpuset 变动(前台切换), 替代固定 3s 轮询。
+        //   收益: 切换响应即时、空闲零唤醒(省电)。inotify 不可用时自动回退到轮询。
+        //   防抖: 收到事件后等 kSettleMs 让冷启动/切换动画最忙的瞬间过去, 再取前台并写频率,
+        //         避免与 App 启动争抢 CPU 造成顿挫; 同时把短时间内的连续事件合并成一次评估。
+        constexpr int kSettleMs   = 220;    // 切换沉降(防抖)
+        constexpr int kReWaitMs   = 80;     // 沉降期内若又来事件, 再延一小段, 合并连切
+        constexpr int kPollIdleMs = 4000;   // 回退轮询 / inotify 空闲复查间隔
+
+        int fd = inotify_init1(IN_CLOEXEC);
+        int wd = -1;
+        if (fd >= 0) {
+            wd = inotify_add_watch(fd, cpusetEventPath, IN_ALL_EVENTS);
+            if (wd < 0) { close(fd); fd = -1; }
+        }
+        logger.Info(fd >= 0
+            ? "场景画像监控线程已启动 (事件驱动: 监听 top-app 切换, 支持通配符匹配)"
+            : "场景画像监控线程已启动 (inotify 不可用, 回退轮询; 支持通配符匹配)");
+
+        // 启动时先评估一次当前前台
+        evalForegroundOnce();
 
         while (true) {
-            // 熄屏时降低检测频率
+            // 熄屏时降低活动频率(省电); 此时不阻塞监听, 定期轻量复查
             if (scene_.current() == SceneDetector::Scene::Standby) {
                 utils.sleep_ms(8000);   // v4.3: 5s -> 8s
                 continue;
             }
 
-            // [优化] 优先轻量路径(读 cpuset+cmdline,无 dumpsys 开销);
-            //        getTopApp 内部已是 "fast 优先, dumpsys 兜底"。
-            std::string pkg = utils.getTopAppCached(2500);
-            if (pkg.empty() || pkg == "null") {
-                utils.sleep_ms(3000);
+            int ev = waitTopAppEvent(fd, wd, kPollIdleMs);
+            if (ev < 0) {
+                // inotify 出错 → 退化为纯轮询, 避免线程空转占 CPU
+                utils.sleep_ms(kPollIdleMs);
+                evalForegroundOnce();
+                continue;
+            }
+            if (ev == 0) {
+                // 超时无事件: 仍轻量复查一次(覆盖个别 ROM 不触发 cpuset 事件的情况)
+                evalForegroundOnce();
                 continue;
             }
 
-            // 包名未变化，跳过
-            if (pkg == lastTopApp) {
-                utils.sleep_ms(3000);   // v4.3: 2s -> 3s (省电)
-                continue;
+            // 收到切换事件 → 防抖沉降: 期间继续吸收后续事件, 合并连切为一次评估
+            utils.sleep_ms(kSettleMs);
+            while (waitTopAppEvent(fd, wd, kReWaitMs) == 1) {
+                utils.sleep_ms(kReWaitMs);
             }
-
-            // 包名变化，使用通配符查找匹配的场景画像
-            lastTopApp = pkg;
-            int newMatch = Config::AppProfile::findMatchingModel(pkg.c_str());
-
-            // [Fix v4.1] currentMatch 是 atomic
-            int oldMatch = Config::AppProfile::currentMatch.load();
-            if (newMatch != oldMatch) {
-                Config::AppProfile::currentMatch.store(newMatch);
-                if (newMatch >= 0) {
-                    logger.Info("前台应用切换: %s -> 匹配场景 '%s' (isGame=%d)",
-                                pkg.c_str(),
-                                Config::AppProfile::Models[newMatch].modelName.c_str(),
-                                Config::AppProfile::Models[newMatch].isGame ? 1 : 0);
-                } else {
-                    logger.Info("前台应用切换: %s -> 无匹配场景画像", pkg.c_str());
-                }
-                // 立即应用新的频率策略
-                applyWithProfile(scene_.current());
-                // 注意：核心开关已在 applyAppProfile / restoreBaseCoresIfNeeded 内部处理
-            }
-
-            utils.sleep_ms(3000);   // v4.3: 2s -> 3s (省电)
+            evalForegroundOnce();
         }
     }
 
