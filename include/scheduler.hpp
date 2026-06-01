@@ -118,6 +118,19 @@ public:
         if (!Governor.empty()) {
             FastSnprintf(path, sizeof(path), GovernorPath, Policy);
             bool ok = utils.FileWriteBlocking(path, Governor);
+            if (!ok) {
+                // [Fix 问题4/9400e] 配置里的调速器不被当前 SoC 支持(如 8E 没有 hmbird、
+                //   天玑9400e 没有 walt)→ 写入失败, 整簇没人接管频率。回退到 SoC 默认调速器
+                //   (高通 walt / 非高通 sugov_ext)再写一次, 保证频率有人管。
+                string_t fb = function.checkQcom() ? "walt" : "sugov_ext";
+                if (fb != Governor) {
+                    if (utils.FileWriteBlocking(path, fb)) {
+                        logger.Warn("CPU簇: %d 调速器 %s 不可用, 已回退 %s",
+                                    Policy, Governor.c_str(), fb.c_str());
+                        ok = true;
+                    }
+                }
+            }
             if (ok) logger.Info("CPU簇: %d 调速器: %s", Policy, Governor.c_str());
             else    logger.Warn("CPU簇: %d 调速器写入失败: %s (节点不可写或调速器不存在)", Policy, Governor.c_str());
         }
