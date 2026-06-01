@@ -101,6 +101,14 @@ public:
                      "/sys/devices/system/cpu/cpufreq/policy%d/affected_cpus", Policy);
         if (!utils.FileStartsWithDigit(affPath)) {
             logger.Debug("CPU簇: %d 无在线核,跳过 governor/频率", Policy);
+            // [Fix 问题2] 整簇离线被跳过时清掉该簇去重缓存。否则核心稍后重新上线、要写相同
+            //   governor(如 hmbird)时, 会被开头的去重判为"已是该值"而跳过 → 刚上线的核
+            //   停在内核默认(walt)。清掉缓存保证下次必写。
+            if (cluster >= 0) {
+                lastMinFreq[cluster].clear();
+                lastMaxFreq[cluster].clear();
+                lastGovernor[cluster].clear();
+            }
             return;
         }
 
@@ -138,9 +146,35 @@ public:
     void Boost() {
         for (int i = 0; i <= 3; i++) {
             if (Policy::CpuPolicy[i] == -1) continue;
-            FreqWriter(Policy::CpuPolicy[i], Performances::MinFreq[i], 
+            FreqWriter(Policy::CpuPolicy[i], Performances::MinFreq[i],
                     LaunchBoost::BoostFreq[i], Performances::CpuGovernor[i]);
             utils.sleep_ms(LaunchBoost::boost_rate_limit_ms);
+        }
+    }
+
+    // [Fix 问题2] 返回 core 所属的 policy(起始核 <= core 的最大 CpuPolicy); 找不到返回 -1。
+    int policyForCore(int core) {
+        int best = -1;
+        for (int i = 0; i <= 3; i++) {
+            int p = Policy::CpuPolicy[i];
+            if (p != -1 && p <= core && p > best) best = p;
+        }
+        return best;
+    }
+
+    // [Fix 问题2] 等某个簇真正上线(affected_cpus 非空)。CPU 上线是异步 hotplug, 刚写完
+    //   online=1 时 affected_cpus 可能还没更新, 若此刻就写 governor 会被 FreqWriter 判
+    //   "整簇离线"跳过 → 超大核(6-7)拿不到 hmbird/风驰。这里轮询等待(上限 timeoutMs)。
+    void waitClusterReady(int policy, int timeoutMs = 80) {
+        if (policy < 0) return;
+        char p[256];
+        FastSnprintf(p, sizeof(p),
+                     "/sys/devices/system/cpu/cpufreq/policy%d/affected_cpus", policy);
+        int waited = 0;
+        while (waited < timeoutMs) {
+            if (utils.FileStartsWithDigit(p)) return;
+            utils.sleep_ms(8);
+            waited += 8;
         }
     }
 
@@ -190,11 +224,18 @@ public:
             }
             if (hasCustomOnline) {
                 char path[256];
+                bool broughtOnline = false;
                 for (int i = 0; i <= 7; i++) {
                     if (model.Online[i] == -1) continue;
                     FastSnprintf(path, sizeof(path), onlinePath, i);
                     utils.WriteInt(path, model.Online[i]);
+                    if (model.Online[i] == 1) broughtOnline = true;
                     logger.Debug("画像核心: %d %s", i, model.Online[i] ? "开启" : "关闭");
+                }
+                // [Fix 问题2] 等被点亮的簇真正上线再写频率/调速器, 确保 hmbird 落到 6-7 等刚上线的核
+                if (broughtOnline) {
+                    for (int i = 0; i <= 7; i++)
+                        if (model.Online[i] == 1) waitClusterReady(policyForCore(i));
                 }
             }
         }
@@ -345,7 +386,13 @@ public:
         for (int i = 0; i <= 7; i++) {
             if (Performances::Online[i] != -1) { anyDefined = true; break; }
         }
-        if (anyDefined) online();
+        if (anyDefined) {
+            online();
+            // [Fix 问题2] 全局模式(如全局风驰)同样: 等刚点亮的簇真正上线再写 governor,
+            //   否则超大核 6-7 来不及上线 → FreqWriter 跳过 → 保持 walt。
+            for (int i = 0; i <= 7; i++)
+                if (Performances::Online[i] == 1) waitClusterReady(policyForCore(i));
+        }
     }
 
     void online() {
@@ -585,6 +632,14 @@ public:
     void evalForegroundOnce(bool fresh) {
         std::string pkg = fresh ? utils.getTopApp() : utils.getTopAppCached(2500);
         if (pkg.empty() || pkg == "null") return;
+
+        // [Fix 小窗/弹窗/通知栏] 黑名单前台(launcher/systemui/输入法/PopupWindow/通知栏/android 等)
+        //   只是临时覆盖在当前应用之上, 并不代表真正切换了应用 → 直接忽略, 保持当前画像不变,
+        //   且不更新 lastTopApp(这样小窗关掉/点回游戏时能正确识别为"还在原应用")。
+        //   否则开小窗、拉通知栏、弹输入法都会被误判为"离开游戏回默认", 风驰画像被撤掉
+        //   (用户需再点一下游戏才恢复)。这正是问题1/3的根因。
+        if (Config::AppProfile::isBlacklisted(pkg.c_str())) return;
+
         if (pkg == lastTopApp) return;
 
         lastTopApp = pkg;
