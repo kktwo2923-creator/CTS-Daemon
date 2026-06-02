@@ -669,6 +669,46 @@ public:
         return 1;                          // 有事件
     }
 
+    // 把 top-app cpuset 重新拉回"应有的全核范围", 抵消部分 ROM 在小窗/浮窗获焦时对
+    //   top-app cpuset 的收窄(踢掉超大核 → 卡 0-5)。仅在"游戏被小窗盖住仍要保活"时调用。
+    //   目标范围: 优先用配置里的 Cpuset::top_app(用户显式设过); 否则用当前全部在线 CPU
+    //   (/sys/devices/system/cpu/online), 这样即便没启用 cpuset 配置也能护住全核。
+    //   幂等: 实值==目标则不写, 避免与 ROM 来回 ping-pong 造成写风暴。
+    void reassertGameTopAppCpus() {
+        auto trimEol = [](char* s, ssize_t n) {
+            for (ssize_t i = n - 1; i >= 0 &&
+                 (s[i] == '\n' || s[i] == '\r' || s[i] == ' ' || s[i] == '\t'); --i)
+                s[i] = '\0';
+        };
+        char desired[64] = { 0 };
+        if (Config::Cpuset::enable && !Config::Cpuset::top_app.empty()) {
+            snprintf(desired, sizeof(desired), "%s", Config::Cpuset::top_app.c_str());
+        } else {
+            int fd = open("/sys/devices/system/cpu/online", O_RDONLY | O_CLOEXEC);
+            if (fd < 0) return;
+            ssize_t n = read(fd, desired, sizeof(desired) - 1);
+            close(fd);
+            if (n <= 0) return;
+            desired[n] = '\0';
+            trimEol(desired, n);
+        }
+        if (!desired[0]) return;
+
+        // 读当前 top-app/cpus, 与目标相同则不写(避免无谓 sysfs 抖动与 ping-pong)。
+        char cur[64] = { 0 };
+        int rfd = open("/dev/cpuset/top-app/cpus", O_RDONLY | O_CLOEXEC);
+        if (rfd >= 0) {
+            ssize_t n = read(rfd, cur, sizeof(cur) - 1);
+            close(rfd);
+            if (n > 0) { cur[n] = '\0'; trimEol(cur, n); }
+        }
+        if (strcmp(cur, desired) == 0) return;   // 已是全核范围 → 不动作
+
+        utils.FileWrite("/dev/cpuset/top-app/cpus", desired);
+        logger.Info("游戏小窗: top-app cpuset 被收窄(%s) → 拉回全核 %s",
+                    cur[0] ? cur : "?", desired);
+    }
+
     // 取前台并按需切换画像。
     //   fresh=true: 强制取最新前台(事件驱动路径必须用,否则 getTopAppCached 的 TTL
     //   缓存会返回切换前的旧包名 → 误判"未变化"跳过 → 表现为检测延迟很高)。
@@ -701,8 +741,17 @@ public:
                 && Config::AppProfile::Models[curMatch].isGame && !lastTopApp.empty()) {
                 int nm = Config::AppProfile::findMatchingModel(pkg.c_str());
                 bool newIsGame = (nm >= 0 && Config::AppProfile::Models[nm].isGame);
-                if (!newIsGame && utils.isPackageInTopApp(lastTopApp.c_str()))
+                if (!newIsGame && utils.isPackageInTopApp(lastTopApp.c_str())) {
+                    // [Fix 小窗收窄cpuset] 仅保持画像还不够: 部分 ROM(ColorOS/OplusOS)在小窗/浮窗
+                    //   (freeform)获焦瞬间会"只改 cpuset 不下线核心"地把 top-app cpuset 收窄,
+                    //   把超大核 6-7 踢出 → top-app 卡 0-5。原先这里只 return 不重写 cpuset,
+                    //   导致 ROM 的收窄固着(实测: 游戏仍在 top-app、cpu6/7 online, 却卡 0-5)。
+                    //   这里把 top-app cpuset 重新拉回应有的全核范围, 抵消 ROM 收窄。ROM 的收窄
+                    //   写入本身会触发 top-app inotify → 本路径被唤醒重判 → 事件驱动地纠正,
+                    //   无需轮询; 且幂等(实值==目标不写)避免与 ROM 来回 ping-pong 写风暴。
+                    reassertGameTopAppCpus();
                     return;   // 游戏仍在前台, 小窗只是覆盖其上 → 保持游戏画像
+                }
             }
         }
 
