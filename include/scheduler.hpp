@@ -40,6 +40,7 @@ private:
 
     bool cpuBoost = false;
     std::string lastTopApp;          // 上一次前台应用包名（用于画像切换去重）
+    std::string lastReassertCpus;    // 游戏小窗护核: 上次实测的 top-app cpus(仅状态变化才记日志, 防刷屏)
 
     // [v4.1 dedup] 缓存上一次写入的 (min,max,gov)，相同则跳过 sysfs 写
     // 避免 None→Touch→None / 重复 applyScene 等抖动场景重复刷盘
@@ -680,33 +681,52 @@ public:
                  (s[i] == '\n' || s[i] == '\r' || s[i] == ' ' || s[i] == '\t'); --i)
                 s[i] = '\0';
         };
-        char desired[64] = { 0 };
-        if (Config::Cpuset::enable && !Config::Cpuset::top_app.empty()) {
-            snprintf(desired, sizeof(desired), "%s", Config::Cpuset::top_app.c_str());
-        } else {
-            int fd = open("/sys/devices/system/cpu/online", O_RDONLY | O_CLOEXEC);
-            if (fd < 0) return;
-            ssize_t n = read(fd, desired, sizeof(desired) - 1);
+        auto readNode = [&](const char* p, char* out, size_t cap) -> bool {
+            out[0] = '\0';
+            int fd = open(p, O_RDONLY | O_CLOEXEC);
+            if (fd < 0) return false;
+            ssize_t n = read(fd, out, cap - 1);
             close(fd);
-            if (n <= 0) return;
-            desired[n] = '\0';
-            trimEol(desired, n);
-        }
+            if (n <= 0) { out[0] = '\0'; return false; }
+            out[n] = '\0'; trimEol(out, n);
+            return true;
+        };
+
+        char desired[64] = { 0 };
+        if (Config::Cpuset::enable && !Config::Cpuset::top_app.empty())
+            snprintf(desired, sizeof(desired), "%s", Config::Cpuset::top_app.c_str());
+        else if (!readNode("/sys/devices/system/cpu/online", desired, sizeof(desired)))
+            return;
         if (!desired[0]) return;
 
-        // 读当前 top-app/cpus, 与目标相同则不写(避免无谓 sysfs 抖动与 ping-pong)。
+        // 当前 top-app/cpus 已是目标 → 不动作(避免无谓 sysfs 抖动与和 ROM 来回 ping-pong)。
         char cur[64] = { 0 };
-        int rfd = open("/dev/cpuset/top-app/cpus", O_RDONLY | O_CLOEXEC);
-        if (rfd >= 0) {
-            ssize_t n = read(rfd, cur, sizeof(cur) - 1);
-            close(rfd);
-            if (n > 0) { cur[n] = '\0'; trimEol(cur, n); }
-        }
-        if (strcmp(cur, desired) == 0) return;   // 已是全核范围 → 不动作
+        readNode("/dev/cpuset/top-app/cpus", cur, sizeof(cur));
+        if (strcmp(cur, desired) == 0) { lastReassertCpus.assign(cur); return; }
 
+        // [关键] cpuset 约束: 子集必须 ⊆ 父集。实测此 ROM 把 top-app/foreground/system-background
+        //   同时收到 0-5, 多半是连父级(root /dev/cpuset)一起收窄了 → 此时直接写 top-app=0-7 会被
+        //   内核拒绝/截断, 看似写了实则没生效(FileWrite 不报错)。所以先把父(root)放开到全核,
+        //   再写 top-app/foreground。background/system-background 不动(它们本就该限制在小核)。
+        utils.FileWrite("/dev/cpuset/cpus", desired);          // 放开父集; 内核禁改 root 时写失败无副作用
         utils.FileWrite("/dev/cpuset/top-app/cpus", desired);
-        logger.Info("游戏小窗: top-app cpuset 被收窄(%s) → 拉回全核 %s",
-                    cur[0] ? cur : "?", desired);
+        utils.FileWrite("/dev/cpuset/foreground/cpus", desired);
+
+        // 读回实测值: 写入是否真生效只能看这里(不能只信"写了")。仅在状态变化时记日志, 防刷屏。
+        char after[64] = { 0 };
+        readNode("/dev/cpuset/top-app/cpus", after, sizeof(after));
+        if (lastReassertCpus != after) {
+            if (strcmp(after, desired) == 0) {
+                logger.Info("游戏小窗: top-app cpuset 被收窄(%s) → 已拉回全核 %s", cur, after);
+            } else {
+                char root[64] = { 0 };
+                readNode("/dev/cpuset/cpus", root, sizeof(root));
+                logger.Warn("游戏小窗: 拉回全核未生效 目标=%s 实测 top-app=%s root=%s "
+                            "(父集受限或被 ROM 即时改回)",
+                            desired, after[0] ? after : "?", root[0] ? root : "?");
+            }
+            lastReassertCpus.assign(after);
+        }
     }
 
     // 取前台并按需切换画像。
