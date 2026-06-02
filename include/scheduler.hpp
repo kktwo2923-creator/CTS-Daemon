@@ -25,7 +25,12 @@ private:
     static constexpr const char* MaxFreqPath = "/sys/devices/system/cpu/cpufreq/policy%d/scaling_max_freq";
 
     std::vector<thread> threads;
-    std::mutex mtx; 
+    std::mutex mtx;
+    // [Fix 半写混合态] 串行化整段画像应用(c0/c1/核心/cpuset 一气呵成)。FreqWriter 内的 mtx
+    //   只保护单次写, 保护不了多簇序列; 多线程(appProfileTask / configTriggerTask /
+    //   perappTriggerTask)同时 apply 会在簇级别交错 → 出现 c0/c1 调速器各属不同画像的混合态。
+    //   可重入: applyAllConfig→release→applyWithProfile 同线程嵌套不自锁。
+    std::recursive_mutex applyMtx;
 
     Function function;
     JsonConfig conf;
@@ -388,6 +393,7 @@ public:
     // 统一的频率应用入口：自动判断是否使用应用画像
     // [v4.7] 简化：scene 永远是 None（场景识别已禁用），二选一：画像 or 基础 mode
     void applyWithProfile(SceneDetector::Scene scene) {
+        std::lock_guard<std::recursive_mutex> lk(applyMtx);
         int matchIdx = Config::AppProfile::currentMatch.load();
         if (Config::AppProfile::enable && matchIdx >= 0) {
             applyAppProfile(matchIdx, scene);
@@ -447,6 +453,7 @@ public:
      * release(频率) + SchedParam(调速器参数) + online(核心开关) + gpuFreqControl(GPU)
      */
     void applyAllConfig() {
+        std::lock_guard<std::recursive_mutex> lk(applyMtx);
         release();
         SchedParam();
         online();
@@ -474,7 +481,21 @@ public:
             // 只需重载 perapp 覆盖表,无需整份 readConfig(更轻)
             // 日志由 loadPerApp 内部按"条数变化"打印,避免每次写入都刷屏
             conf.loadPerApp();
+            // [Fix] perapp 改了要对"当前前台"立刻生效。evalForegroundOnce 用 pkg==lastTopApp 去重:
+            //   游戏包名没变、但它在 perapp 里映射的画像可能变了 → 必须强制重算, 否则在游戏里改
+            //   perapp 既不生效也不打日志。
+            logger.Info("perapp_powermode.txt 已重载 (%d 条映射), 重算当前前台画像",
+                        Config::AppProfile::perAppCount);
+            forceReevalForeground();
         }
+    }
+
+    // perapp 表改动后, 强制对当前前台重算并应用(绕过 pkg==lastTopApp 去重)。
+    //   清空 lastTopApp 让本次评估必走完整流程; 是否真重写由 newMatch!=oldMatch 决定
+    //   (映射没变则自然跳过, 不会无谓刷 sysfs)。
+    void forceReevalForeground() {
+        lastTopApp.clear();
+        evalForegroundOnce(true);
     }
 
     // 读取文件原始字节并返回内容哈希(0=读失败/空)。用于"内容未变则跳过重载":
@@ -653,6 +674,10 @@ public:
     //   缓存会返回切换前的旧包名 → 误判"未变化"跳过 → 表现为检测延迟很高)。
     //   fresh=false: 允许用缓存(空闲复查/熄屏等低频路径,省电)。
     void evalForegroundOnce(bool fresh) {
+        // [并发安全] 串行化整段"取前台 + 改 lastTopApp/currentMatch + 应用"。否则
+        //   appProfileTask 与 perappTriggerTask 两线程同时进来会并发改 lastTopApp(非原子)
+        //   并交错写 sysfs。可重入锁: 内部 applyWithProfile 同线程重入不自锁。
+        std::lock_guard<std::recursive_mutex> lk(applyMtx);
         std::string pkg = fresh ? utils.getTopApp() : utils.getTopAppCached(2500);
         if (pkg.empty() || pkg == "null") return;
 
