@@ -249,7 +249,12 @@ public:
                 if (broughtOnline) {
                     for (int i = 0; i <= 7; i++)
                         if (model.Online[i] == 1) waitClusterReady(policyForCore(i));
+                    function.cpusetFunction();   // 核心上线后重落 cpuset, top-app 恢复到全核范围
                 }
+            } else {
+                // [Fix cpuset卡0-5] 画像未定义核心开关 → 跟随基础模式(Performances::Online)。
+                //   否则从省电档(6/7 离线)切到这种画像时完全不碰核心 → 停在 0-5, 6/7 拉不回来。
+                restoreBaseCoresIfNeeded();
             }
         }
 
@@ -396,8 +401,10 @@ public:
     // 仅在至少有一个 Online[i] != -1 时才动作，避免无谓的 sysfs 写
     void restoreBaseCoresIfNeeded() {
         bool anyDefined = false;
+        bool anyOnline  = false;
         for (int i = 0; i <= 7; i++) {
-            if (Performances::Online[i] != -1) { anyDefined = true; break; }
+            if (Performances::Online[i] != -1) anyDefined = true;
+            if (Performances::Online[i] == 1)  anyOnline  = true;
         }
         if (anyDefined) {
             online();
@@ -405,6 +412,9 @@ public:
             //   否则超大核 6-7 来不及上线 → FreqWriter 跳过 → 保持 walt。
             for (int i = 0; i <= 7; i++)
                 if (Performances::Online[i] == 1) waitClusterReady(policyForCore(i));
+            // [Fix cpuset卡0-5] 核心上线后重落 cpuset, 让 top-app/foreground 恢复全核范围,
+            //   不依赖内核 hotplug 自动还原 cpuset 的 effective_cpus。
+            if (anyOnline) function.cpusetFunction();
         }
     }
 
