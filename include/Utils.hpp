@@ -244,6 +244,44 @@ public:
         return "";
     }
 
+    // 指定包名是否仍在 top-app cpuset(即仍是前台/可见进程)。
+    //   用于判断"在游戏上盖了个 App 小窗/浮窗": 浮窗 App 获焦时, 后台的全屏游戏进程
+    //   通常仍留在 top-app → 据此判定游戏还在前台跑, 不应被小窗抢走画像。全程读文件。
+    bool isPackageInTopApp(const char* pkg) {
+        if (!pkg || !*pkg) return false;
+        static const char* taskPaths[] = {
+            "/dev/cpuset/top-app/tasks",
+            "/dev/cpuset/top-app/cgroup.procs",
+        };
+        for (const char* tp : taskPaths) {
+            int fd = open(tp, O_RDONLY);
+            if (fd < 0) continue;
+            char buf[4096];
+            ssize_t n = read(fd, buf, sizeof(buf) - 1);
+            close(fd);
+            if (n <= 0) continue;
+            buf[n] = '\0';
+            char* save = nullptr;
+            for (char* tok = strtok_r(buf, "\n", &save); tok; tok = strtok_r(nullptr, "\n", &save)) {
+                int pid = atoi(tok);
+                if (pid <= 0) continue;
+                char cmdPath[64];
+                snprintf(cmdPath, sizeof(cmdPath), "/proc/%d/cmdline", pid);
+                int cfd = open(cmdPath, O_RDONLY);
+                if (cfd < 0) continue;
+                char cmd[256] = { 0 };
+                ssize_t cn = read(cfd, cmd, sizeof(cmd) - 1);
+                close(cfd);
+                if (cn <= 0) continue;
+                cmd[cn] = '\0';
+                char* colon = strchr(cmd, ':');   // 去掉 ":xxx" 子进程后缀
+                if (colon) *colon = '\0';
+                if (strcmp(cmd, pkg) == 0) return true;
+            }
+        }
+        return false;
+    }
+
     // dumpsys window 的 mCurrentFocus: 真正"获焦窗口"的包名, 是前台 App 的权威来源。
     //   "mCurrentFocus=null"(熄屏/锁屏无焦点)→ 返回 "null"; 解析不出(部分 ROM 无 window
     //   服务或格式不同)→ 返回空串, 由调用方回退轻量路径。

@@ -665,6 +665,22 @@ public:
 
         if (pkg == lastTopApp) return;
 
+        // [Fix 游戏上开App小窗] 当前已是游戏画像、新获焦却是非游戏 App, 且游戏进程仍在 top-app
+        //   (说明全屏游戏还在前台跑, 只是被小窗/浮窗盖住) → 保持游戏画像不切, 也不更新 lastTopApp
+        //   (关掉小窗回到游戏时能正确识别为"还在游戏")。否则微信等 App 小窗一获焦就被判成前台,
+        //   切到它的画像(social 等)→ 撤掉风驰/游戏档; 且 social 无核心开关会回退基础模式,
+        //   若基础模式是省电/均衡(6-7核关)→ 核心被降到 0-5。这是"开小窗后掉档/卡0-5"的根因。
+        {
+            int curMatch = Config::AppProfile::currentMatch.load();
+            if (curMatch >= 0 && curMatch < Config::AppProfile::modelCount
+                && Config::AppProfile::Models[curMatch].isGame && !lastTopApp.empty()) {
+                int nm = Config::AppProfile::findMatchingModel(pkg.c_str());
+                bool newIsGame = (nm >= 0 && Config::AppProfile::Models[nm].isGame);
+                if (!newIsGame && utils.isPackageInTopApp(lastTopApp.c_str()))
+                    return;   // 游戏仍在前台, 小窗只是覆盖其上 → 保持游戏画像
+            }
+        }
+
         lastTopApp = pkg;
         int newMatch = Config::AppProfile::findMatchingModel(pkg.c_str());
 
