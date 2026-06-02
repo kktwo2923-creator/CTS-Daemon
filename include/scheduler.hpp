@@ -745,7 +745,16 @@ public:
         }
     }
 
-    // [Fix 小窗护核 守护循环] 部分 ROM(本机 ColorOS)有后台进程在游戏被小窗盖住时反复把
+    // 当前是游戏档才把 top-app 压回全核。供"即时压制"(inotify 事件)与守护循环共用。
+    //   纯 cpuset 文件读写、幂等(未被收窄不写), 极轻量。
+    void maybeEnforceGameCpus() {
+        int cur = Config::AppProfile::currentMatch.load();
+        if (cur >= 0 && cur < Config::AppProfile::modelCount
+            && Config::AppProfile::Models[cur].isGame)
+            enforceTopAppFullCpus();
+    }
+
+    // [Fix 小窗护核 守护循环] 部分 ROM(本机 ColorOS 的 ORMS 资源管家)有后台进程在游戏被小窗盖住时反复把
     //   top-app cpuset 写回 0-5(反应式: 一见我们写 0-7 就抢回)。纯事件驱动(inotify + 300ms~1.2s
     //   尾沿防抖)压不住这种高频抢写 → 表现为 0-7/0-5 抖动。本线程: 仅当当前画像是游戏档时,
     //   每 200ms 检查 top-app cpus, 被收窄就立刻写回全核。只读写 cpuset 文件(无 dumpsys), 幂等
@@ -758,7 +767,7 @@ public:
             bool isGame = (cur >= 0 && cur < Config::AppProfile::modelCount
                            && Config::AppProfile::Models[cur].isGame);
             if (isGame) {
-                enforceTopAppFullCpus();
+                maybeEnforceGameCpus();
                 utils.sleep_ms(200);
             } else {
                 utils.sleep_ms(1000);
@@ -889,7 +898,16 @@ public:
                 continue;
             }
 
-            // 收到切换事件 → 尾沿防抖: 等前台安静下来再做重操作, 避免连切时频率写风暴
+            // [Route B 即时压制] 收到 top-app cpuset 变动事件先无防抖地把 top-app 压回全核
+            //   (游戏档时;便宜、幂等)。ROM 的 ORMS 抢写 top-app/cpus 本身就会触发本事件 →
+            //   抵消其收窄的延迟从"尾沿防抖最长 1.2s"压到一次 inotify 往返(ms 级)。重操作
+            //   (取包名+画像)仍走下面的尾沿防抖。
+            //   注: 不在下面的防抖 while 里再调本函数 —— enforce 会读 top-app/cpus, 在 IN_ALL_EVENTS
+            //   监视下自己的读会生成 IN_ACCESS 事件, 在循环内调用会自我诱发、把防抖顶到 kMaxDeferMs。
+            //   持续抢写由 200ms 守护循环(cpusetKeeperTask)兜底, 此处只需即时压一次。
+            maybeEnforceGameCpus();
+
+            // 尾沿防抖: 等前台安静下来再做重操作(取包名/切画像), 避免连切时频率写风暴
             int deferred = 0;
             while (deferred < kMaxDeferMs) {
                 int more = waitTopAppEvent(fd, wd, kQuietMs);
