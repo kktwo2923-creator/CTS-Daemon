@@ -244,33 +244,45 @@ public:
         return "";
     }
 
-    string getTopApp() {
-        // [优化] 先走轻量路径(读 cpuset+cmdline,纯文件读); 失败再回退 dumpsys。
-        //   注: 新内核(8E5/Android 15 等)对读别的进程 /proc/<pid>/cmdline 有
-        //   SELinux/权限限制, 轻量路径可能拿不到前台 → 必须保留 dumpsys 兜底,
-        //   否则前台检测彻底失效(画像永不切换)。dumpsys 仅在 fast 失败时才调用,
-        //   且上层 getTopAppCached 已做 TTL 节流, 不会高频 fork。
-        string fast = getTopAppFast();
-        if (!fast.empty()) return fast;
-
-        char data[256] = { 0 };  // Fix: 初始化，防止 popen 失败时读垃圾内存
+    // dumpsys window 的 mCurrentFocus: 真正"获焦窗口"的包名, 是前台 App 的权威来源。
+    //   "mCurrentFocus=null"(熄屏/锁屏无焦点)→ 返回 "null"; 解析不出(部分 ROM 无 window
+    //   服务或格式不同)→ 返回空串, 由调用方回退轻量路径。
+    string getTopAppFocus() {
+        char data[256] = { 0 };  // 初始化，防止 popen 失败时读垃圾内存
         popenShell("dumpsys window | grep mCurrentFocus", data, sizeof(data));
         if (strstr(data, "mCurrentFocus=null")) return "null";
 
-        // Fix: strstr/strchr 返回 nullptr 时直接 +offset 会 segfault，必须先判空
+        // strstr/strchr 返回 nullptr 时直接 +offset 会 segfault，必须先判空
         const char* u0pos = strstr(data, "u0");
-        if (!u0pos) return "null";
+        if (!u0pos) return "";
         const char* ptr = u0pos + 3;
 
         const char* end_pos = strchr(ptr, '/');
-        if (!end_pos) return "null";
+        if (!end_pos) return "";
 
         char temp[256];
         ptrdiff_t len = end_pos - ptr;
-        if (len <= 0 || len >= (ptrdiff_t)sizeof(temp)) return "null";
+        if (len <= 0 || len >= (ptrdiff_t)sizeof(temp)) return "";
         memcpy(temp, ptr, len);
         temp[len] = '\0';
         return string(temp);
+    }
+
+    string getTopApp() {
+        // [Fix 前台检测] dumpsys mCurrentFocus 是真正"获焦窗口"的权威来源, 优先用它。
+        //   top-app cpuset 的"取最后一个像包名的进程"启发式: 当多个 app 同时驻留 top-app
+        //   (游戏 + 其后台/小窗/分屏进程)时会选错 → 返回错误或旧包名, 且因非空而永不回退
+        //   dumpsys → 画像不切、卡在限核档(就是"打开王者也不切、不出 log"的根因)。
+        //   故改为 dumpsys 优先; 仅当 dumpsys 不可用/解析不出时才回退轻量 cpuset 路径。
+        //   dumpsys 只在前台切换事件 + 空闲复查时调用(上层已事件/TTL 节流), 不会高频 fork。
+        string focus = getTopAppFocus();
+        if (focus == "null") return "null";     // 明确无获焦窗口(熄屏/锁屏)→ 不切
+        if (!focus.empty()) return focus;
+
+        // dumpsys 拿不到(被裁剪/格式异常)→ 回退轻量 cpuset 路径
+        string fast = getTopAppFast();
+        if (!fast.empty()) return fast;
+        return "";
     }
 
     // [新增 v4.3] 带 TTL 缓存的 getTopApp，省电关键
