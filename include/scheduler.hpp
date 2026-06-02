@@ -41,6 +41,7 @@ private:
     bool cpuBoost = false;
     std::string lastTopApp;          // 上一次前台应用包名（用于画像切换去重）
     std::string lastReassertCpus;    // 游戏小窗护核: 上次实测的 top-app cpus(仅状态变化才记日志, 防刷屏)
+    std::atomic<bool> keeperShouldExit{false};  // cpuset 守护循环退出标志
 
     // [v4.1 dedup] 缓存上一次写入的 (min,max,gov)，相同则跳过 sysfs 写
     // 避免 None→Touch→None / 重复 applyScene 等抖动场景重复刷盘
@@ -74,6 +75,8 @@ public:
         // v4.2 应用画像线程（独立于 LaunchBoost，通过 dumpsys 获取前台包名）
         if (Config::AppProfile::enable) {
             threads.emplace_back(thread(&Schedule::appProfileTask, this));
+            // [Fix 小窗护核] cpuset 守护循环: 游戏档期间把 top-app 压在全核, 压制 ROM 反复收窄。
+            threads.emplace_back(thread(&Schedule::cpusetKeeperTask, this));
         }
     }
 
@@ -670,62 +673,96 @@ public:
         return 1;                          // 有事件
     }
 
-    // 把 top-app cpuset 重新拉回"应有的全核范围", 抵消部分 ROM 在小窗/浮窗获焦时对
-    //   top-app cpuset 的收窄(踢掉超大核 → 卡 0-5)。仅在"游戏被小窗盖住仍要保活"时调用。
-    //   目标范围: 优先用配置里的 Cpuset::top_app(用户显式设过); 否则用当前全部在线 CPU
-    //   (/sys/devices/system/cpu/online), 这样即便没启用 cpuset 配置也能护住全核。
-    //   幂等: 实值==目标则不写, 避免与 ROM 来回 ping-pong 造成写风暴。
-    void reassertGameTopAppCpus() {
-        auto trimEol = [](char* s, ssize_t n) {
-            for (ssize_t i = n - 1; i >= 0 &&
-                 (s[i] == '\n' || s[i] == '\r' || s[i] == ' ' || s[i] == '\t'); --i)
-                s[i] = '\0';
-        };
-        auto readNode = [&](const char* p, char* out, size_t cap) -> bool {
-            out[0] = '\0';
-            int fd = open(p, O_RDONLY | O_CLOEXEC);
-            if (fd < 0) return false;
-            ssize_t n = read(fd, out, cap - 1);
-            close(fd);
-            if (n <= 0) { out[0] = '\0'; return false; }
-            out[n] = '\0'; trimEol(out, n);
-            return true;
-        };
+    // 读 sysfs/cpuset 节点首段并去掉尾部空白/换行。失败返回 false 且 out 置空串。
+    bool readTrimmedNode(const char* p, char* out, size_t cap) {
+        out[0] = '\0';
+        int fd = open(p, O_RDONLY | O_CLOEXEC);
+        if (fd < 0) return false;
+        ssize_t n = read(fd, out, cap - 1);
+        close(fd);
+        if (n <= 0) { out[0] = '\0'; return false; }
+        out[n] = '\0';
+        for (ssize_t i = n - 1; i >= 0 &&
+             (out[i] == '\n' || out[i] == '\r' || out[i] == ' ' || out[i] == '\t'); --i)
+            out[i] = '\0';
+        return true;
+    }
 
+    // top-app"应有的全核范围": 优先用配置 Cpuset::top_app(用户显式设过), 否则用当前全部
+    //   在线 CPU(/sys/devices/system/cpu/online), 这样即便没启用 cpuset 配置也能护住全核。
+    bool computeFullCpus(char* out, size_t cap) {
+        if (Config::Cpuset::enable && !Config::Cpuset::top_app.empty()) {
+            snprintf(out, cap, "%s", Config::Cpuset::top_app.c_str());
+            return out[0] != '\0';
+        }
+        return readTrimmedNode("/sys/devices/system/cpu/online", out, cap);
+    }
+
+    // 把 top-app cpuset 压回全核范围。被收窄才写(幂等), 返回是否执行了写入。
+    //   [关键] cpuset 约束: 子集必须 ⊆ 父集。实测此 ROM 把 top-app/foreground 连同父级
+    //   (root /dev/cpuset)一起收到 0-5 → 直接写 top-app=0-7 会被内核拒绝/截断(看似写了实则
+    //   没生效)。所以先把父(root)放开到全核, 再写 top-app/foreground。background/system-background
+    //   不动(它们本就该限制在小核)。无 dumpsys/无日志, 供高频守护循环调用。
+    bool enforceTopAppFullCpus() {
         char desired[64] = { 0 };
-        if (Config::Cpuset::enable && !Config::Cpuset::top_app.empty())
-            snprintf(desired, sizeof(desired), "%s", Config::Cpuset::top_app.c_str());
-        else if (!readNode("/sys/devices/system/cpu/online", desired, sizeof(desired)))
-            return;
-        if (!desired[0]) return;
-
-        // 当前 top-app/cpus 已是目标 → 不动作(避免无谓 sysfs 抖动与和 ROM 来回 ping-pong)。
+        if (!computeFullCpus(desired, sizeof(desired)) || !desired[0]) return false;
         char cur[64] = { 0 };
-        readNode("/dev/cpuset/top-app/cpus", cur, sizeof(cur));
+        readTrimmedNode("/dev/cpuset/top-app/cpus", cur, sizeof(cur));
+        if (strcmp(cur, desired) == 0) return false;   // 未被收窄 → 不写
+        utils.FileWrite("/dev/cpuset/cpus", desired);          // 先放开父集(内核禁改 root 时写失败无副作用)
+        utils.FileWrite("/dev/cpuset/top-app/cpus", desired);
+        utils.FileWrite("/dev/cpuset/foreground/cpus", desired);
+        return true;
+    }
+
+    // 游戏被小窗盖住时把 top-app cpuset 拉回全核 + 回读校验 + 记日志(仅状态变化时, 防刷屏)。
+    //   守卫路径(低频, 开小窗那一刻)用它; 高频守护循环用上面的 enforceTopAppFullCpus(静默)。
+    void reassertGameTopAppCpus() {
+        char desired[64] = { 0 };
+        if (!computeFullCpus(desired, sizeof(desired)) || !desired[0]) return;
+        char cur[64] = { 0 };
+        readTrimmedNode("/dev/cpuset/top-app/cpus", cur, sizeof(cur));
         if (strcmp(cur, desired) == 0) { lastReassertCpus.assign(cur); return; }
 
-        // [关键] cpuset 约束: 子集必须 ⊆ 父集。实测此 ROM 把 top-app/foreground/system-background
-        //   同时收到 0-5, 多半是连父级(root /dev/cpuset)一起收窄了 → 此时直接写 top-app=0-7 会被
-        //   内核拒绝/截断, 看似写了实则没生效(FileWrite 不报错)。所以先把父(root)放开到全核,
-        //   再写 top-app/foreground。background/system-background 不动(它们本就该限制在小核)。
-        utils.FileWrite("/dev/cpuset/cpus", desired);          // 放开父集; 内核禁改 root 时写失败无副作用
+        utils.FileWrite("/dev/cpuset/cpus", desired);
         utils.FileWrite("/dev/cpuset/top-app/cpus", desired);
         utils.FileWrite("/dev/cpuset/foreground/cpus", desired);
 
         // 读回实测值: 写入是否真生效只能看这里(不能只信"写了")。仅在状态变化时记日志, 防刷屏。
         char after[64] = { 0 };
-        readNode("/dev/cpuset/top-app/cpus", after, sizeof(after));
+        readTrimmedNode("/dev/cpuset/top-app/cpus", after, sizeof(after));
         if (lastReassertCpus != after) {
             if (strcmp(after, desired) == 0) {
                 logger.Info("游戏小窗: top-app cpuset 被收窄(%s) → 已拉回全核 %s", cur, after);
             } else {
                 char root[64] = { 0 };
-                readNode("/dev/cpuset/cpus", root, sizeof(root));
+                readTrimmedNode("/dev/cpuset/cpus", root, sizeof(root));
                 logger.Warn("游戏小窗: 拉回全核未生效 目标=%s 实测 top-app=%s root=%s "
                             "(父集受限或被 ROM 即时改回)",
                             desired, after[0] ? after : "?", root[0] ? root : "?");
             }
             lastReassertCpus.assign(after);
+        }
+    }
+
+    // [Fix 小窗护核 守护循环] 部分 ROM(本机 ColorOS)有后台进程在游戏被小窗盖住时反复把
+    //   top-app cpuset 写回 0-5(反应式: 一见我们写 0-7 就抢回)。纯事件驱动(inotify + 300ms~1.2s
+    //   尾沿防抖)压不住这种高频抢写 → 表现为 0-7/0-5 抖动。本线程: 仅当当前画像是游戏档时,
+    //   每 200ms 检查 top-app cpus, 被收窄就立刻写回全核。只读写 cpuset 文件(无 dumpsys), 幂等
+    //   (未收窄不写); 非游戏档时降到 1s 轻量轮询, 几乎不耗电。游戏全屏(无小窗)时 top-app 本就
+    //   是全核 → 读到相等不写, 同样无开销。
+    void cpusetKeeperTask() {
+        sleep(3);   // 等首次配置应用完成
+        while (!keeperShouldExit.load()) {
+            int cur = Config::AppProfile::currentMatch.load();
+            bool isGame = (cur >= 0 && cur < Config::AppProfile::modelCount
+                           && Config::AppProfile::Models[cur].isGame);
+            if (isGame) {
+                enforceTopAppFullCpus();
+                utils.sleep_ms(200);
+            } else {
+                utils.sleep_ms(1000);
+            }
         }
     }
 
