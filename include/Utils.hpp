@@ -282,6 +282,48 @@ public:
         return false;
     }
 
+    // 屏幕上是否存在"可见的小窗(freeform)Task"。用于判断"在游戏上盖了个小窗/浮窗":
+    //   AOSP/国产 ROM 的小窗本质都是 freeform 窗口, dumpsys 的 Task Z 序里会出现
+    //   形如 `Task{... visible=true visibleRequested=true mode=freeform ...}` 的行
+    //   (mode=freeform 即 WINDOWING_MODE_FREEFORM=5)。比"游戏是否还在 top-app"可靠:
+    //   即便 ROM 把游戏踢出 top-app, 只要小窗还浮着, 这里就能判出。
+    //   只在 grep 到的 freeform 行同时标记可见时才返回 true(避免把后台/最小化的
+    //   freeform 误判成"小窗在前台"), 否则返回 false 让调用方回退别的信号。
+    bool hasVisibleFreeform() {
+        // [TTL 缓存] dumpsys 昂贵(~100~300ms)。小窗状态不会毫秒级翻转, 缓存 1.2s:
+        //   ROM 反复收窄 cpuset 触发本判定时, 不至于 dumpsys 连打。缓存只影响"刚冒出的
+        //   小窗最多晚 1.2s 被认到", 而关小窗回游戏走 pkg==lastTopApp 早退, 不受影响。
+        using clock = std::chrono::steady_clock;
+        static std::mutex m;
+        static bool lastResult = false;
+        static clock::time_point lastTime{};
+        auto now = clock::now();
+        {
+            std::lock_guard<std::mutex> lk(m);
+            auto since = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastTime).count();
+            if (lastTime.time_since_epoch().count() != 0 && since < 1200) return lastResult;
+        }
+
+        char buf[8192] = { 0 };
+        // grep 缩小输出(dumpsys activity activities 很大); 2>/dev/null 吞掉权限噪声
+        popenRead("dumpsys activity activities 2>/dev/null | grep -i freeform",
+                  buf, sizeof(buf));
+        bool found = false;
+        char* save = nullptr;
+        for (char* line = strtok_r(buf, "\n", &save); line; line = strtok_r(nullptr, "\n", &save)) {
+            if (!strstr(line, "freeform")) continue;
+            if (strstr(line, "visible=true") || strstr(line, "visibleRequested=true")) {
+                found = true; break;
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lk(m);
+            lastResult = found;
+            lastTime   = now;
+        }
+        return found;
+    }
+
     // dumpsys window 的 mCurrentFocus: 真正"获焦窗口"的包名, 是前台 App 的权威来源。
     //   "mCurrentFocus=null"(熄屏/锁屏无焦点)→ 返回 "null"; 解析不出(部分 ROM 无 window
     //   服务或格式不同)→ 返回空串, 由调用方回退轻量路径。

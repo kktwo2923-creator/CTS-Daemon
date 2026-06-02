@@ -750,18 +750,23 @@ public:
 
         if (pkg == lastTopApp) return;
 
-        // [Fix 游戏上开App小窗] 当前已是游戏画像、新获焦却是非游戏 App, 且游戏进程仍在 top-app
-        //   (说明全屏游戏还在前台跑, 只是被小窗/浮窗盖住) → 保持游戏画像不切, 也不更新 lastTopApp
-        //   (关掉小窗回到游戏时能正确识别为"还在游戏")。否则微信等 App 小窗一获焦就被判成前台,
-        //   切到它的画像(social 等)→ 撤掉风驰/游戏档; 且 social 无核心开关会回退基础模式,
+        // [Fix 游戏上开App小窗] 当前已是游戏画像、新获焦却是非游戏 App, 且屏幕上有"小窗(freeform)
+        //   浮在前台"(说明全屏游戏还在后面跑, 只是被小窗/浮窗盖住) → 保持游戏画像不切, 也不更新
+        //   lastTopApp(关掉小窗回到游戏时能正确识别为"还在游戏")。否则微信等 App 小窗一获焦就被
+        //   判成前台, 切到它的画像(social 等)→ 撤掉风驰/游戏档; 且 social 无核心开关会回退基础模式,
         //   若基础模式是省电/均衡(6-7核关)→ 核心被降到 0-5。这是"开小窗后掉档/卡0-5"的根因。
+        //   [freeform 判定] 主信号用 dumpsys 的 freeform Task(社区成熟做法, 比 top-app 可靠:
+        //     本机 ROM 开小窗时会把游戏踢出 top-app, isPackageInTopApp 会漏判); 兼容地 OR 上
+        //     isPackageInTopApp 兜底(部分 ROM 小窗非 AOSP freeform 类型, grep 不到)。此分支只在
+        //     "游戏档 + 新获焦是非游戏"时触发(正是开小窗那一刻), 才付一次 dumpsys 开销, 不影响常态。
         {
             int curMatch = Config::AppProfile::currentMatch.load();
             if (curMatch >= 0 && curMatch < Config::AppProfile::modelCount
                 && Config::AppProfile::Models[curMatch].isGame && !lastTopApp.empty()) {
                 int nm = Config::AppProfile::findMatchingModel(pkg.c_str());
                 bool newIsGame = (nm >= 0 && Config::AppProfile::Models[nm].isGame);
-                if (!newIsGame && utils.isPackageInTopApp(lastTopApp.c_str())) {
+                if (!newIsGame &&
+                    (utils.hasVisibleFreeform() || utils.isPackageInTopApp(lastTopApp.c_str()))) {
                     // [Fix 小窗收窄cpuset] 仅保持画像还不够: 部分 ROM(ColorOS/OplusOS)在小窗/浮窗
                     //   (freeform)获焦瞬间会"只改 cpuset 不下线核心"地把 top-app cpuset 收窄,
                     //   把超大核 6-7 踢出 → top-app 卡 0-5。原先这里只 return 不重写 cpuset,
