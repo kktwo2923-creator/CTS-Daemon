@@ -16,7 +16,9 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Wshadow")
 # Release build optimizations (learned from CoreTaskOptimizer)
 if(CMAKE_BUILD_TYPE STREQUAL "Release" OR NOT CMAKE_BUILD_TYPE)
     # 注：本进程不做浮点运算，去掉 -ffast-math（它会改变 NaN/Inf 语义、可能引入 UB，对纯整数+sysfs IO 的守护进程毫无收益）
-    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -flto -funroll-loops")
+    # [优化 §6.8] IO 密集型常驻 daemon 瓶颈在 sysfs 读写而非算力。-O3+循环展开徒增二进制体积与常驻 RSS。
+    #             改 -Os(优化体积):更小的代码段、更低的常驻内存、更快的载入；速度基本无差。保留 -flto。
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -Os -flto")
     set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -finline-functions -fomit-frame-pointer")
     set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -fno-rtti -fno-threadsafe-statics -fvisibility=hidden")
     # Remove unused sections to reduce binary size

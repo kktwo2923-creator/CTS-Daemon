@@ -248,6 +248,13 @@ namespace Config {
                     if (matchPackage(Models[i].packages[j].c_str(), pkg)) return i;
                 }
             }
+            // [Fix] 仍无匹配(桌面/QQ/微信等未配画像的应用)→ 回退到全局默认模式
+            //   (perapp_powermode.txt 的 "* <模式>" 行)。否则这些应用会停在
+            //   上一个 App(如游戏的风驰)的档位,无法回落到省电/均衡。
+            if (!perAppGlobal.empty()) {
+                int idx = findModelByName(perAppGlobal.c_str());
+                if (idx >= 0) return idx;
+            }
             return -1;
         }
     }
