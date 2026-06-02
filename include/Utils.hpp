@@ -282,47 +282,47 @@ public:
         return false;
     }
 
-    // 屏幕上是否存在"可见的小窗(freeform)Task"。用于判断"在游戏上盖了个小窗/浮窗":
-    //   AOSP/国产 ROM 的小窗本质都是 freeform 窗口, dumpsys 的 Task Z 序里会出现
-    //   形如 `Task{... visible=true visibleRequested=true mode=freeform ...}` 的行
-    //   (mode=freeform 即 WINDOWING_MODE_FREEFORM=5)。比"游戏是否还在 top-app"可靠:
-    //   即便 ROM 把游戏踢出 top-app, 只要小窗还浮着, 这里就能判出。
-    //   只在 grep 到的 freeform 行同时标记可见时才返回 true(避免把后台/最小化的
-    //   freeform 误判成"小窗在前台"), 否则返回 false 让调用方回退别的信号。
-    bool hasVisibleFreeform() {
-        // [TTL 缓存] dumpsys 昂贵(~100~300ms)。小窗状态不会毫秒级翻转, 缓存 1.2s:
-        //   ROM 反复收窄 cpuset 触发本判定时, 不至于 dumpsys 连打。缓存只影响"刚冒出的
-        //   小窗最多晚 1.2s 被认到", 而关小窗回游戏走 pkg==lastTopApp 早退, 不受影响。
+    // 指定包名的 Task 是否仍"可见"(visible=true)。ROM 无关的"游戏被小窗盖住"判定:
+    //   开小窗时游戏还在后面渲染 → 游戏 Task 仍 visible=true; 真正切走/被全屏 App 完全
+    //   盖住(occluded) → 游戏 visible=false。比"freeform 模式"可靠得多 —— 本机 ColorOS
+    //   小窗(灵动窗口)报的是 mode=fullscreen 不是 freeform, 按窗口模式根本判不出。
+    //   实现: dumpsys activity activities 的每个 Task 头行形如
+    //     `Task{... A=10357:pkg U=0 visible=true visibleRequested=true mode=... }`
+    //   只看 Task{ 头行(grep 缩小输出), 同一行里既含本包名又含 visible=true 即判可见。
+    //   带 1.2s TTL 缓存(按包名), ROM 反复收窄 cpuset 触发本判定时不至于 dumpsys 连打。
+    bool isPackageVisible(const char* pkg) {
+        if (!pkg || !*pkg) return false;
         using clock = std::chrono::steady_clock;
         static std::mutex m;
+        static std::string lastPkg;
         static bool lastResult = false;
         static clock::time_point lastTime{};
         auto now = clock::now();
         {
             std::lock_guard<std::mutex> lk(m);
             auto since = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastTime).count();
-            if (lastTime.time_since_epoch().count() != 0 && since < 1200) return lastResult;
+            if (lastTime.time_since_epoch().count() != 0 && since < 1200 && lastPkg == pkg)
+                return lastResult;
         }
 
-        char buf[8192] = { 0 };
-        // grep 缩小输出(dumpsys activity activities 很大); 2>/dev/null 吞掉权限噪声
-        popenRead("dumpsys activity activities 2>/dev/null | grep -i freeform",
+        char buf[16384] = { 0 };
+        // 只取 Task 头行(含 A=uid:pkg + visible= + mode=), 大幅缩小 dumpsys 输出
+        popenRead("dumpsys activity activities 2>/dev/null | grep 'Task{'",
                   buf, sizeof(buf));
         bool found = false;
         char* save = nullptr;
         for (char* line = strtok_r(buf, "\n", &save); line; line = strtok_r(nullptr, "\n", &save)) {
-            if (!strstr(line, "freeform")) continue;
-            if (strstr(line, "visible=true") || strstr(line, "visibleRequested=true")) {
-                found = true; break;
-            }
+            if (strstr(line, pkg) && strstr(line, "visible=true")) { found = true; break; }
         }
         {
             std::lock_guard<std::mutex> lk(m);
+            lastPkg.assign(pkg);
             lastResult = found;
             lastTime   = now;
         }
         return found;
     }
+
 
     // dumpsys window 的 mCurrentFocus: 真正"获焦窗口"的包名, 是前台 App 的权威来源。
     //   "mCurrentFocus=null"(熄屏/锁屏无焦点)→ 返回 "null"; 解析不出(部分 ROM 无 window
