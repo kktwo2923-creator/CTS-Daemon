@@ -282,6 +282,68 @@ public:
         return false;
     }
 
+    // [优化 前台检测] 一次 dumpsys activity activities 解析, 同时得到"前台身份 + 可见包集合"。
+    //   - topPkg = Z 序最顶的"可见标准 Task"包名 = 真正前台 App。它天然过滤掉输入法/通知栏/
+    //     弹窗/状态栏这类"窗口覆盖物"(它们不是 type=standard 的 Task), 比 mCurrentFocus 少误判
+    //     (下拉通知栏/弹输入法时, topPkg 仍是底下的 App, 不会被当成切换)。
+    //   - visible = 所有 visible=true 的 Task 包名(供 isPackageVisible 判"游戏被小窗盖住")。
+    //   getTopApp 与 isPackageVisible 共享同一份快照(带 TTL 缓存)→ 守卫路径由原来两次 dumpsys
+    //   (window + activities)降到一次。解析失败(valid=false)时调用方回退 mCurrentFocus / cpuset。
+    struct ForegroundSnapshot {
+        std::string topPkg;
+        std::vector<std::string> visible;
+        bool valid = false;
+    };
+
+    ForegroundSnapshot parseForegroundOnce() {
+        ForegroundSnapshot s;
+        char buf[16384] = { 0 };
+        // 只取 Task 头行(含 type= / A=uid:pkg / visible=), 大幅缩小 dumpsys 输出
+        popenRead("dumpsys activity activities 2>/dev/null | grep 'Task{'", buf, sizeof(buf));
+        if (!buf[0]) return s;                 // 无输出 → valid=false, 让调用方回退
+        s.valid = true;
+        char* save = nullptr;
+        for (char* line = strtok_r(buf, "\n", &save); line; line = strtok_r(nullptr, "\n", &save)) {
+            char* a = strstr(line, "A=");       // 形如 A=<uid>:<pkg>
+            if (!a) continue;
+            char* colon = strchr(a, ':');
+            if (!colon) continue;
+            char pkg[160];
+            int k = 0;
+            for (char* p = colon + 1; *p && *p != ' ' && *p != '}' && *p != '\t'
+                                       && k < (int)sizeof(pkg) - 1; ++p)
+                pkg[k++] = *p;
+            pkg[k] = '\0';
+            if (k == 0) continue;
+            if (!strstr(line, "visible=true")) continue;   // 只收可见 Task(注意不会误匹配 visibleRequested=true)
+            s.visible.emplace_back(pkg);
+            if (s.topPkg.empty() && strstr(line, "type=standard"))
+                s.topPkg = pkg;                 // 第一个(Z 序最顶)可见标准 Task = 前台
+        }
+        return s;
+    }
+
+    ForegroundSnapshot getForegroundCached(int ttlMs) {
+        using clock = std::chrono::steady_clock;
+        static std::mutex m;
+        static ForegroundSnapshot last;
+        static clock::time_point lastTime{};
+        auto now = clock::now();
+        {
+            std::lock_guard<std::mutex> lk(m);
+            auto since = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastTime).count();
+            if (lastTime.time_since_epoch().count() != 0 && since < ttlMs && last.valid)
+                return last;
+        }
+        ForegroundSnapshot s = parseForegroundOnce();
+        if (s.valid) {
+            std::lock_guard<std::mutex> lk(m);
+            last = s;
+            lastTime = now;
+        }
+        return s;
+    }
+
     // 指定包名的 Task 是否仍"可见"(visible=true)。ROM 无关的"游戏被小窗盖住"判定:
     //   开小窗时游戏还在后面渲染 → 游戏 Task 仍 visible=true; 真正切走/被全屏 App 完全
     //   盖住(occluded) → 游戏 visible=false。比"freeform 模式"可靠得多 —— 本机 ColorOS
@@ -292,74 +354,63 @@ public:
     //   带 1.2s TTL 缓存(按包名), ROM 反复收窄 cpuset 触发本判定时不至于 dumpsys 连打。
     bool isPackageVisible(const char* pkg) {
         if (!pkg || !*pkg) return false;
-        using clock = std::chrono::steady_clock;
-        static std::mutex m;
-        static std::string lastPkg;
-        static bool lastResult = false;
-        static clock::time_point lastTime{};
-        auto now = clock::now();
-        {
-            std::lock_guard<std::mutex> lk(m);
-            auto since = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastTime).count();
-            if (lastTime.time_since_epoch().count() != 0 && since < 1200 && lastPkg == pkg)
-                return lastResult;
-        }
-
-        char buf[16384] = { 0 };
-        // 只取 Task 头行(含 A=uid:pkg + visible= + mode=), 大幅缩小 dumpsys 输出
-        popenRead("dumpsys activity activities 2>/dev/null | grep 'Task{'",
-                  buf, sizeof(buf));
-        bool found = false;
-        char* save = nullptr;
-        for (char* line = strtok_r(buf, "\n", &save); line; line = strtok_r(nullptr, "\n", &save)) {
-            if (strstr(line, pkg) && strstr(line, "visible=true")) { found = true; break; }
-        }
-        {
-            std::lock_guard<std::mutex> lk(m);
-            lastPkg.assign(pkg);
-            lastResult = found;
-            lastTime   = now;
-        }
-        return found;
+        // 复用前台快照(1.2s TTL): 与 getTopApp 同源, 守卫路径不再单独 dumpsys。
+        ForegroundSnapshot s = getForegroundCached(1200);
+        if (!s.valid) return false;            // 解析失败 → 保守判不可见(守卫已 OR isPackageInTopApp 兜底)
+        for (const auto& v : s.visible)
+            if (v == pkg) return true;
+        return false;
     }
 
 
-    // dumpsys window 的 mCurrentFocus: 真正"获焦窗口"的包名, 是前台 App 的权威来源。
-    //   "mCurrentFocus=null"(熄屏/锁屏无焦点)→ 返回 "null"; 解析不出(部分 ROM 无 window
-    //   服务或格式不同)→ 返回空串, 由调用方回退轻量路径。
+    // dumpsys window 的 mCurrentFocus: "获焦窗口"包名。作为 getTopApp 的回退信号。
+    //   "mCurrentFocus=null"(熄屏/锁屏无焦点)→ 返回 "null"; 解析不出 → 返回空串。
+    //   [健壮性] ① 读多行(多显示屏/多窗口会有多个 mCurrentFocus), 逐行找第一个有效包名;
+    //   ② 支持多用户(u0/u10/u11...), 不再硬编码 "u0"; ③ 严格边界, 排除非包名片段。
+    //   格式: mCurrentFocus=Window{<hash> u<N> <pkg>/<activity>}
     string getTopAppFocus() {
-        char data[256] = { 0 };  // 初始化，防止 popen 失败时读垃圾内存
-        popenShell("dumpsys window | grep mCurrentFocus", data, sizeof(data));
-        if (strstr(data, "mCurrentFocus=null")) return "null";
+        char data[1024] = { 0 };
+        popenRead("dumpsys window 2>/dev/null | grep mCurrentFocus", data, sizeof(data));
+        if (!data[0]) return "";
+        // 仅当所有焦点都是 null(熄屏/锁屏)才返回 "null"; 否则继续找有效包名。
+        bool sawNull = (strstr(data, "mCurrentFocus=null") != nullptr);
 
-        // strstr/strchr 返回 nullptr 时直接 +offset 会 segfault，必须先判空
-        const char* u0pos = strstr(data, "u0");
-        if (!u0pos) return "";
-        const char* ptr = u0pos + 3;
-
-        const char* end_pos = strchr(ptr, '/');
-        if (!end_pos) return "";
-
-        char temp[256];
-        ptrdiff_t len = end_pos - ptr;
-        if (len <= 0 || len >= (ptrdiff_t)sizeof(temp)) return "";
-        memcpy(temp, ptr, len);
-        temp[len] = '\0';
-        return string(temp);
+        // 扫描所有 " u<digits> " 模式, 取其后到 '/' 的包名(第一个有效者, 通常即主显示屏)。
+        for (char* w = data; (w = strstr(w, " u")) != nullptr; ++w) {
+            char* p = w + 2;
+            if (*p < '0' || *p > '9') continue;          // " u" 后须是用户号数字
+            while (*p >= '0' && *p <= '9') ++p;           // 跳过用户号(支持 u10/u11)
+            if (*p != ' ') continue;                      // 用户号后应是空格
+            ++p;                                          // 包名起点
+            char* slash = strchr(p, '/');
+            if (!slash || slash <= p) continue;
+            ptrdiff_t len = slash - p;
+            if (len <= 0 || len >= 256) continue;
+            char temp[256];
+            memcpy(temp, p, len);
+            temp[len] = '\0';
+            if (strchr(temp, ' ') || strchr(temp, '{') || strchr(temp, '}'))
+                continue;                                 // 含空白/大括号 → 不是包名
+            return string(temp);
+        }
+        return sawNull ? string("null") : string("");
     }
 
     string getTopApp() {
-        // [Fix 前台检测] dumpsys mCurrentFocus 是真正"获焦窗口"的权威来源, 优先用它。
-        //   top-app cpuset 的"取最后一个像包名的进程"启发式: 当多个 app 同时驻留 top-app
-        //   (游戏 + 其后台/小窗/分屏进程)时会选错 → 返回错误或旧包名, 且因非空而永不回退
-        //   dumpsys → 画像不切、卡在限核档(就是"打开王者也不切、不出 log"的根因)。
-        //   故改为 dumpsys 优先; 仅当 dumpsys 不可用/解析不出时才回退轻量 cpuset 路径。
-        //   dumpsys 只在前台切换事件 + 空闲复查时调用(上层已事件/TTL 节流), 不会高频 fork。
+        // [优化 前台检测] 主信号 = dumpsys activity activities 里"Z 序最顶的可见标准 Task"。
+        //   相比 mCurrentFocus(获焦窗口), 它天然过滤掉输入法/通知栏/弹窗/状态栏这类"窗口覆盖物"
+        //   (它们不是 type=standard Task), 误判更少; 且与 isPackageVisible 共享同一次 dumpsys,
+        //   守卫路径开销减半。三级回退保证健壮:
+        //     ① activities 最顶可见标准 Task(权威, 多数场景)
+        //     ② mCurrentFocus(activities 解析失败, 或停在桌面无标准 Task)
+        //     ③ top-app cpuset(连 dumpsys 都不可用时的兜底)
+        ForegroundSnapshot s = getForegroundCached(0);   // fresh: 本次必解析; 随后 isPackageVisible 命中缓存
+        if (s.valid && !s.topPkg.empty()) return s.topPkg;
+
         string focus = getTopAppFocus();
         if (focus == "null") return "null";     // 明确无获焦窗口(熄屏/锁屏)→ 不切
         if (!focus.empty()) return focus;
 
-        // dumpsys 拿不到(被裁剪/格式异常)→ 回退轻量 cpuset 路径
         string fast = getTopAppFast();
         if (!fast.empty()) return fast;
         return "";
