@@ -4,6 +4,7 @@
 #include "Function.hpp"
 #include "SceneDetector.hpp"
 #include <sys/inotify.h>
+#include <sched.h>
 #include <linux/limits.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -55,6 +56,7 @@ public:
     Schedule& operator=(Schedule&&) = delete;
 
     Schedule() {
+        pinSelfToLittleCores();   // 必须最先调: 在创建任何工作线程前设主线程亲和性, 新线程继承之
         Init();
         threads.emplace_back(thread(&Schedule::configTriggerTask, this));
         threads.emplace_back(thread(&Schedule::jsonTriggerTask, this));
@@ -743,6 +745,22 @@ public:
             }
             lastReassertCpus.assign(after);
         }
+    }
+
+    // [Best practice §5/#4] 把本守护进程自身的线程钉在低位核, 避免调度器守护自己抢占前台
+    //   游戏最吃紧的超大核(参考 uperf: 控制器线程绑小核)。骁龙 8 Elite 是 2+6 无小核, 故选
+    //   性能簇低位核 0-3, 避开 6-7 两颗 Oryon 超大核; 兼容传统 big.LITTLE(0-3 即小核)。
+    //   在创建任何工作线程之前对主线程设亲和性 → 后续 new thread 继承之, 全进程生效。
+    //   守护线程本就大多阻塞/低频, 钉低位核不影响其及时性(reassert/keeper 容忍 ms~200ms 抖动);
+    //   且不降优先级, 以保证与 ORMS 抢写 cpuset 时仍能及时压回。失败仅记日志, 不影响功能。
+    void pinSelfToLittleCores() {
+        cpu_set_t set;
+        CPU_ZERO(&set);
+        for (int c = 0; c <= 3; c++) CPU_SET(c, &set);
+        if (sched_setaffinity(0, sizeof(set), &set) == 0)
+            logger.Info("守护进程已绑定低位核 0-3(避开超大核 6-7), 不抢占前台游戏");
+        else
+            logger.Debug("绑定低位核失败 errno=%d(忽略, 不影响功能)", errno);
     }
 
     // 当前是游戏档才把 top-app 压回全核。供"即时压制"(inotify 事件)与守护循环共用。
