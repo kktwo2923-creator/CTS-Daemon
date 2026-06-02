@@ -772,6 +772,99 @@ public:
             enforceTopAppFullCpus();
     }
 
+    // [Best practice §5.1 uxaffinity] 把前台游戏的"主线程 + 渲染线程"主动绑到超大核(Prime),
+    //   让最吃帧的热线程独占最快的核(参考 uperf 的 uxaffinity)。只绑这两类热线程, 不动其余
+    //   线程(避免把冷线程也挤到 2 个 Prime 核上反而互相争抢)。仅游戏档时、低频(~4s)刷新;
+    //   游戏退出后线程消亡, 绑定自然失效, 无需清理。
+    static bool isHotThreadName(const char* c) {
+        // comm 被内核截断到 15 字符。覆盖主流引擎渲染线程名。
+        static const char* names[] = {
+            "RenderThread", "UnityMain", "UnityGfxDeviceW", "RHIThread", "GLThread"
+        };
+        for (const char* n : names) if (strcmp(c, n) == 0) return true;
+        return false;
+    }
+
+    // 在 /proc 里按包名找到进程(线程组长)pid; 找不到返回 -1。
+    int findPidByPackage(const std::string& pkg) {
+        DIR* d = opendir("/proc");
+        if (!d) return -1;
+        int found = -1;
+        struct dirent* e;
+        while ((e = readdir(d)) != nullptr) {
+            if (e->d_name[0] < '0' || e->d_name[0] > '9') continue;
+            char path[64];
+            snprintf(path, sizeof(path), "/proc/%s/cmdline", e->d_name);
+            int fd = open(path, O_RDONLY | O_CLOEXEC);
+            if (fd < 0) continue;
+            char buf[256];
+            ssize_t n = read(fd, buf, sizeof(buf) - 1);
+            close(fd);
+            if (n <= 0) continue;
+            buf[n] = '\0';                       // cmdline 以 \0 分隔, 首段即进程名
+            char* colon = strchr(buf, ':');      // 去掉 ":xxx" 子进程后缀
+            if (colon) *colon = '\0';
+            if (pkg == buf) { found = atoi(e->d_name); break; }
+        }
+        closedir(d);
+        return found;
+    }
+
+    void applyGameUxAffinity(const std::string& gamePkg) {
+        if (gamePkg.empty()) return;
+        // Prime 核 = 在线 CPU 的最高 2 个(骁龙 8 Elite 即 6,7)。
+        char online[64] = { 0 };
+        if (!readTrimmedNode("/sys/devices/system/cpu/online", online, sizeof(online))) return;
+        int maxCpu = -1;
+        for (char* p = online; *p; ) {
+            if (*p >= '0' && *p <= '9') {
+                int v = atoi(p);
+                if (v > maxCpu) maxCpu = v;
+                while (*p >= '0' && *p <= '9') ++p;
+            } else ++p;
+        }
+        if (maxCpu < 1) return;                  // 至少要有 2 个核才谈 Prime
+        cpu_set_t prime;
+        CPU_ZERO(&prime);
+        CPU_SET(maxCpu, &prime);
+        CPU_SET(maxCpu - 1, &prime);
+
+        int pid = findPidByPackage(gamePkg);
+        if (pid <= 0) return;
+
+        sched_setaffinity(pid, sizeof(prime), &prime);   // 主线程(tid==pid)绑 Prime
+        int pinned = 1;
+
+        char taskdir[64];
+        snprintf(taskdir, sizeof(taskdir), "/proc/%d/task", pid);
+        DIR* d = opendir(taskdir);
+        if (!d) return;
+        struct dirent* e;
+        while ((e = readdir(d)) != nullptr) {
+            if (e->d_name[0] < '0' || e->d_name[0] > '9') continue;
+            int tid = atoi(e->d_name);
+            if (tid <= 0 || tid == pid) continue;
+            char cpath[96];
+            snprintf(cpath, sizeof(cpath), "/proc/%d/task/%d/comm", pid, tid);
+            int fd = open(cpath, O_RDONLY | O_CLOEXEC);
+            if (fd < 0) continue;
+            char comm[64] = { 0 };
+            ssize_t n = read(fd, comm, sizeof(comm) - 1);
+            close(fd);
+            if (n <= 0) continue;
+            comm[n] = '\0';
+            for (ssize_t i = n - 1; i >= 0 && (comm[i] == '\n' || comm[i] == '\r'); --i)
+                comm[i] = '\0';
+            if (isHotThreadName(comm)) {
+                sched_setaffinity(tid, sizeof(prime), &prime);
+                pinned++;
+            }
+        }
+        closedir(d);
+        logger.Debug("uxaffinity: 游戏 %s pid=%d 绑定 %d 个热线程到 Prime(%d,%d)",
+                     gamePkg.c_str(), pid, pinned, maxCpu - 1, maxCpu);
+    }
+
     // [Fix 小窗护核 守护循环] 部分 ROM(本机 ColorOS 的 ORMS 资源管家)有后台进程在游戏被小窗盖住时反复把
     //   top-app cpuset 写回 0-5(反应式: 一见我们写 0-7 就抢回)。纯事件驱动(inotify + 300ms~1.2s
     //   尾沿防抖)压不住这种高频抢写 → 表现为 0-7/0-5 抖动。本线程: 仅当当前画像是游戏档时,
@@ -780,14 +873,23 @@ public:
     //   是全核 → 读到相等不写, 同样无开销。
     void cpusetKeeperTask() {
         sleep(3);   // 等首次配置应用完成
+        int uxTick = 0;
         while (!keeperShouldExit.load()) {
             int cur = Config::AppProfile::currentMatch.load();
             bool isGame = (cur >= 0 && cur < Config::AppProfile::modelCount
                            && Config::AppProfile::Models[cur].isGame);
             if (isGame) {
                 maybeEnforceGameCpus();
+                // uxaffinity 低频刷新(~4s = 20×200ms): 把游戏主线程/渲染线程绑超大核。
+                //   比 200ms cpuset 压制重(要扫 /proc), 故单独降频; 进游戏立即先做一次。
+                if ((uxTick++ % 20) == 0) {
+                    std::string g;
+                    { std::lock_guard<std::recursive_mutex> lk(applyMtx); g = lastTopApp; }
+                    applyGameUxAffinity(g);
+                }
                 utils.sleep_ms(200);
             } else {
+                uxTick = 0;
                 utils.sleep_ms(1000);
             }
         }
