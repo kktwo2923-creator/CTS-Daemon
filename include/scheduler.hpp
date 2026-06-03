@@ -44,6 +44,7 @@ private:
     std::string lastReassertCpus;    // 游戏小窗护核: 上次实测的 top-app cpus(仅状态变化才记日志, 防刷屏)
     std::atomic<bool> keeperShouldExit{false};  // cpuset 守护循环退出标志
     std::atomic<int>  keptGameModel{-1};        // 游戏会话保活: 当前锁定的游戏模型索引(-1=未保活)
+    std::string       lastGovWritten[4];        // 游戏护航: 每簇本会话已决定的 governor(空=未决定/簇还离线)
 
     // [v4.1 dedup] 缓存上一次写入的 (min,max,gov)，相同则跳过 sysfs 写
     // 避免 None→Touch→None / 重复 applyScene 等抖动场景重复刷盘
@@ -773,6 +774,52 @@ public:
             enforceTopAppFullCpus();
     }
 
+    // [Fix 超大核拿不到 scx] 游戏护航: 确保游戏模型每个"已上线"的簇的 cpufreq governor == 配置值。
+    //   根因: 超大核(policy6)受 core_ctl 控制, 刚进游戏负载未起时还没上线 → applyAppProfile 里
+    //   FreqWriter 那一刻 affected_cpus 为空被"无在线核"静默跳过 → 超大核停在内核默认(walt),
+    //   之后没人补写。本函数每秒巡检: 簇已上线但 governor 不对就补写; 读实际 sysfs 比对, 不依赖
+    //   FreqWriter 的去重缓存(那是盲区)。写失败(该簇不支持此 governor, 如 scx 只在小核簇暴露)
+    //   → 回退 SoC 默认并告警一次(lastGovWritten 记最终值, 防每秒刷屏/重试)。
+    void enforceGameGovernors(int idx) {
+        const auto& m = Config::AppProfile::Models[idx];
+        for (int i = 0; i <= 3; i++) {
+            int policy = Config::Policy::CpuPolicy[i];
+            if (policy < 0) continue;
+            const string_t& gov = !m.Governor[i].empty() ? m.Governor[i]
+                                                         : Config::Performances::CpuGovernor[i];
+            if (gov.empty()) continue;
+
+            char aff[256];
+            FastSnprintf(aff, sizeof(aff),
+                         "/sys/devices/system/cpu/cpufreq/policy%d/affected_cpus", policy);
+            if (!utils.FileStartsWithDigit(aff)) continue;   // 簇仍离线 → 等它上线再决定
+
+            char gp[256];
+            FastSnprintf(gp, sizeof(gp), GovernorPath, policy);
+            char cur[64] = { 0 };
+            readTrimmedNode(gp, cur, sizeof(cur));
+
+            if (!lastGovWritten[i].empty()) {
+                // 本会话已决定该簇 governor。若决定值就是配置目标且被 ORMS 改走 → 写回(防抢)。
+                if (lastGovWritten[i] == gov.c_str() && strcmp(cur, gov.c_str()) != 0)
+                    utils.FileWriteBlocking(gp, gov);
+                continue;
+            }
+            // 首次决定(该簇刚上线)
+            if (strcmp(cur, gov.c_str()) == 0) { lastGovWritten[i] = gov.c_str(); continue; }
+            if (utils.FileWriteBlocking(gp, gov)) {
+                logger.Info("游戏护航: policy%d 调速器补写 %s (原 %s)", policy, gov.c_str(), cur);
+                lastGovWritten[i] = gov.c_str();
+            } else {
+                string_t fb = function.checkQcom() ? "walt" : "sugov_ext";
+                if (fb != gov) utils.FileWriteBlocking(gp, fb);
+                logger.Warn("游戏护航: policy%d 不支持 %s, 已回退 %s(该簇请在 config 改用受支持的调速器)",
+                            policy, gov.c_str(), fb.c_str());
+                lastGovWritten[i] = fb.c_str();
+            }
+        }
+    }
+
     // 指定(游戏)模型的包名是否仍"在前台/可见"。判据: 前台快照里任一可见 Task 的包名
     //   findMatchingModel 仍命中该模型 → 还在游戏(支持通配符包名)。dumpsys 失败(快照无效)→
     //   保守返回 true(不因一次取值失败就误判游戏退出、放弃保活)。
@@ -822,6 +869,7 @@ public:
                     if (Config::AppProfile::currentMatch.load() != kept)
                         Config::AppProfile::currentMatch.store(kept);   // 抵消误切, 锁回游戏档
                     applyWithProfile(scene_.current());                  // 重写整套(频率/GPU/核心/cpuset, 幂等)
+                    enforceGameGovernors(kept);                          // 护航: 超大核上线后补写 scx 等
                 } else {
                     // 游戏确实离开前台(不可见) → 结束保活, 交回正常前台评估
                     logger.Info("游戏会话保活退出: %s 已不在前台",
@@ -829,6 +877,7 @@ public:
                     {
                         std::lock_guard<std::recursive_mutex> lk(applyMtx);
                         keptGameModel.store(-1);
+                        for (int i = 0; i <= 3; i++) lastGovWritten[i].clear();   // 下次进游戏重新决定
                         lastTopApp.clear();      // 让下次评估必走完整流程, 正确切到新前台
                     }
                     evalForegroundOnce(true);
