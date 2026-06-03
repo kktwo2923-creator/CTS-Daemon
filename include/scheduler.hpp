@@ -43,6 +43,7 @@ private:
     std::string lastTopApp;          // 上一次前台应用包名（用于画像切换去重）
     std::string lastReassertCpus;    // 游戏小窗护核: 上次实测的 top-app cpus(仅状态变化才记日志, 防刷屏)
     std::atomic<bool> keeperShouldExit{false};  // cpuset 守护循环退出标志
+    std::atomic<int>  keptGameModel{-1};        // 游戏会话保活: 当前锁定的游戏模型索引(-1=未保活)
 
     // [v4.1 dedup] 缓存上一次写入的 (min,max,gov)，相同则跳过 sysfs 写
     // 避免 None→Touch→None / 重复 applyScene 等抖动场景重复刷盘
@@ -772,24 +773,69 @@ public:
             enforceTopAppFullCpus();
     }
 
-    // [Fix 小窗护核 守护循环] 部分 ROM(本机 ColorOS 的 ORMS 资源管家)有后台进程在游戏被小窗盖住时反复把
-    //   top-app cpuset 写回 0-5(反应式: 一见我们写 0-7 就抢回)。纯事件驱动(inotify + 300ms~1.2s
-    //   尾沿防抖)压不住这种高频抢写 → 表现为 0-7/0-5 抖动。本线程: 仅当当前画像是游戏档时,
-    //   每 200ms 检查 top-app cpus, 被收窄就立刻写回全核。只读写 cpuset 文件(无 dumpsys), 幂等
-    //   (未收窄不写); 非游戏档时降到 1s 轻量轮询, 几乎不耗电。游戏全屏(无小窗)时 top-app 本就
-    //   是全核 → 读到相等不写, 同样无开销。
+    // 指定(游戏)模型的包名是否仍"在前台/可见"。判据: 前台快照里任一可见 Task 的包名
+    //   findMatchingModel 仍命中该模型 → 还在游戏(支持通配符包名)。dumpsys 失败(快照无效)→
+    //   保守返回 true(不因一次取值失败就误判游戏退出、放弃保活)。
+    bool isGameModelForeground(int idx) {
+        auto snap = utils.getForegroundCached(800);
+        if (!snap.valid) return true;
+        for (const auto& v : snap.visible)
+            if (Config::AppProfile::findMatchingModel(v.c_str()) == idx)
+                return true;
+        return false;
+    }
+
+    // [游戏会话保活守护] 首次进入游戏档(game_heavy 等 isGame 模型)即启用; 之后只要该游戏模型的
+    //   包名仍能在前台被检测到(top-app / 可见), 就把整套游戏画像(CPU 频率 / GPU 频率 / cpuset 0-7 /
+    //   核心在线)持续锁定, 无视小窗 / 通知栏 / 焦点切换 / ROM(ORMS)抢写。直到该游戏真的离开前台
+    //   (不可见)才退出保活、交回正常前台评估。
+    //   节流: top-app cpuset 每 200ms 即时压(便宜, 应对 ORMS 高频抢 cpuset); 在场检测 + 整套重写
+    //   每 ~1s 一次(一次 dumpsys + applyWithProfile, 靠各层 dedup 幂等, 频率多为 no-op, 不刷屏不顿挫)。
     void cpusetKeeperTask() {
         sleep(3);   // 等首次配置应用完成
+        int tick = 0;
         while (!keeperShouldExit.load()) {
-            int cur = Config::AppProfile::currentMatch.load();
-            bool isGame = (cur >= 0 && cur < Config::AppProfile::modelCount
-                           && Config::AppProfile::Models[cur].isGame);
-            if (isGame) {
-                maybeEnforceGameCpus();
-                utils.sleep_ms(200);
-            } else {
-                utils.sleep_ms(1000);
+            int kept = keptGameModel.load();
+
+            if (kept < 0) {
+                // 未保活: 跟随 currentMatch 进入任一游戏档 → 启用守护
+                int cur = Config::AppProfile::currentMatch.load();
+                if (cur >= 0 && cur < Config::AppProfile::modelCount
+                    && Config::AppProfile::Models[cur].isGame) {
+                    keptGameModel.store(cur);
+                    tick = 0;
+                    logger.Info("游戏会话保活已启用: %s",
+                                Config::AppProfile::Models[cur].modelName.c_str());
+                } else {
+                    utils.sleep_ms(1000);
+                }
+                continue;
             }
+
+            // 保活中: 每 200ms 即时压 top-app cpuset(应对 ORMS 高频抢写)
+            enforceTopAppFullCpus();
+
+            // 每 ~1s: 检测游戏是否仍在前台 + 重写整套游戏画像
+            if ((tick++ % 5) == 0) {
+                if (isGameModelForeground(kept)) {
+                    std::lock_guard<std::recursive_mutex> lk(applyMtx);
+                    if (Config::AppProfile::currentMatch.load() != kept)
+                        Config::AppProfile::currentMatch.store(kept);   // 抵消误切, 锁回游戏档
+                    applyWithProfile(scene_.current());                  // 重写整套(频率/GPU/核心/cpuset, 幂等)
+                } else {
+                    // 游戏确实离开前台(不可见) → 结束保活, 交回正常前台评估
+                    logger.Info("游戏会话保活退出: %s 已不在前台",
+                                Config::AppProfile::Models[kept].modelName.c_str());
+                    {
+                        std::lock_guard<std::recursive_mutex> lk(applyMtx);
+                        keptGameModel.store(-1);
+                        lastTopApp.clear();      // 让下次评估必走完整流程, 正确切到新前台
+                    }
+                    evalForegroundOnce(true);
+                    continue;                    // 不 sleep, 立即重判
+                }
+            }
+            utils.sleep_ms(200);
         }
     }
 
