@@ -48,7 +48,7 @@ public:
         Log(LOG_LEVEL::ERROR, message, std::forward<Args>(args)...);
     }
 
-    // [Fix v4.4] qlib::string 的 operator==(self,self) 在两个独立堆分配的字符串之间比较时
+    // [Fix] qlib::string 的 operator==(self,self) 在两个独立堆分配的字符串之间比较时
     //            存在 UB（distance 跨堆分配），导致 level == "DEBUG" 这种字面量比较
     //            实际上是先把 "DEBUG" 构造成新的 value，再用坏 friend operator== 比较 → 永远不匹配。
     //            改用 strcmp 走 c_str() 路径。

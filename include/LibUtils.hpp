@@ -4,7 +4,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
-#include <cstring>     // [Fix v4.3] 显式 include，避免依赖间接传递
+#include <cstring>     // [Fix] 显式 include，避免依赖间接传递
 #include <cstdint>
 
 namespace LibUtils {

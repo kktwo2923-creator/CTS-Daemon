@@ -1,5 +1,5 @@
 #pragma once
-// v4.1 重构：
+// 重构：
 //   1) Way_Balance 扁平格式 + Switch 合并到 models (基础模型有 mode 字段 + Scenes 子节点)
 //   2) [Fix] 容忍配置文件把 bool/int 写成字符串（"true"/"75" 这种）
 //   3) [Fix] readBool/readInt 统一封装，避免 try/catch 噪音
@@ -28,7 +28,7 @@ private:
 public:
     SchedParam  schedParam[4];
     std::string mode;
-    // [Fix v4.1] baseModelIdx 缓存：避免后续 Scenes 解析时再次遍历 models 找 baseIdx
+    // [Fix] baseModelIdx 缓存：避免后续 Scenes 解析时再次遍历 models 找 baseIdx
     int         baseModelIdx = -1;
 
     // ============================================================
@@ -360,7 +360,7 @@ public:
         if (rc != 0) { logger.Error("解析 config.json 失败 错误码: %d", rc); return false; }
 
         // ---- meta ----
-        // [Fix v4.4] meta 是第一个解析的节点，loglevel 必须在所有后续 logger.Info 之前生效
+        // [Fix] meta 是第一个解析的节点，loglevel 必须在所有后续 logger.Info 之前生效
         // 否则用户即使配 loglevel=ERROR，readConfig() 里几十条 INFO 也会全部刷出来
         try {
             auto& m = json["meta"];
@@ -536,7 +536,7 @@ private:
                 readInt (sc, "heavy_confirm_count",     SceneCfg::heavy_confirm_count);
                 readInt (sc, "heavy_max_duration_ms",   SceneCfg::heavy_max_duration_ms);
                 readInt (sc, "request_burst_slack_ms",  SceneCfg::request_burst_slack_ms);
-                // [v4.5] 突发负载（类卡顿）检测参数
+                // 突发负载（类卡顿）检测参数
                 readInt (sc, "burst_delta_thd",         SceneCfg::burst_delta_thd);
                 readInt (sc, "burst_min_load",          SceneCfg::burst_min_load);
                 readInt (sc, "am_switch_duration_ms",   SceneCfg::am_switch_duration_ms);
@@ -622,7 +622,7 @@ private:
     void applyBaseModel() {
         baseModelIdx = -1;
         for (int i = 0; i < AppProfile::modelCount; i++) {
-            // [Fix v4.4] qlib::string 的 operator== 在两个独立堆分配的 string_t 之间比较时
+            // [Fix] qlib::string 的 operator== 在两个独立堆分配的 string_t 之间比较时
             //            有 UB（friend operator==(a,b) 调用 equal(a.begin(), b.end(), b.begin())
             //            导致 distance 跨指针越界）。这就是日志显示"找不到 mode='powersave'"
             //            但明明 powersave 已加载的根本原因。改用 strcmp 走 c_str() 路径。

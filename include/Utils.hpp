@@ -64,7 +64,7 @@ enum class LOG_LEVEL : uint32_t {
     ERROR = 3,
 };
 
-// [v4.7 cleanup] 已移除一批零调用方的死方法：
+// [cleanup] 已移除一批零调用方的死方法：
 //   CachedWrite / WriteFile(O_TRUNC) / mkdirRecursive / InotifyMain / exec /
 //   getPid / getTid / getActivity / readFrequencies / readString / getScreenProperty /
 //   以及整组温控读取（getMaxCpuTemp / openZonePath / readTemp / checkSensorPath）——
@@ -187,7 +187,7 @@ public:
         chmod(path, 0444);
     }
 
-    // [Fix v4.3] 原版漏了大括号导致 pclose 在 while 循环体内，第二次 fgets 用已关闭 FILE* → UB
+    // [Fix] 原版漏了大括号导致 pclose 在 while 循环体内，第二次 fgets 用已关闭 FILE* → UB
     // 只读第一行（dumpsys window | grep mCurrentFocus 输出本就只有一行）
     void popenShell(const char* cmd, char* buf, size_t buf_size) {
         if (!buf || buf_size == 0) return;
@@ -416,7 +416,7 @@ public:
         return "";
     }
 
-    // [新增 v4.3] 带 TTL 缓存的 getTopApp，省电关键
+    // [新增] 带 TTL 缓存的 getTopApp，省电关键
     //   dumpsys 是个昂贵操作（每次约 100~300ms），频繁调用很费电。
     //   minIntervalMs 内的请求直接返回上次结果，调用方应配合 inotify 触发
     string getTopAppCached(int minIntervalMs = 1500) {

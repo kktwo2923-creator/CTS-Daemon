@@ -48,7 +48,7 @@ public:
         stopGuards();
     }
 
-    // [v4.1] AllFunC 在 Init 时调用一次（启动 GPU 守护 + 写 cpuset 等）
+    // AllFunC 在 Init 时调用一次（启动 GPU 守护 + 写 cpuset 等）
     //        重载 config.json 时只需走 ReloadFunC（不再无谓写 cpuset，省 sysfs 抖动）
     void AllFunC() {
         cpusetFunction();
@@ -100,7 +100,7 @@ public:
     bool writeSysfsLocked(const char* path, const char* value, int valLen) {
         if (!path || !value || valLen <= 0) return false;
 
-        // [Fix v4.6] 与 utils.FileWrite 对齐：open 失败时 chmod 0666 后重试
+        // [Fix] 与 utils.FileWrite 对齐：open 失败时 chmod 0666 后重试
         //            许多新 SoC（如 SM8850）的 GPU sysfs 默认 0444/0644，
         //            直接 O_WRONLY 会 EACCES → write 失败 → tryGpuPath 误判此路径不可用 → 链式跳过。
         int fd = open(path, O_WRONLY | O_CLOEXEC);
@@ -171,7 +171,7 @@ public:
     }
 
     int readKgslAvailableFreqs(int freqsOut[]) {
-        // [Fix v4.6] 旧的 kgsl-3d0/gpu_available_frequencies 在新内核（SM8850 等）
+        // [Fix] 旧的 kgsl-3d0/gpu_available_frequencies 在新内核（SM8850 等）
         //            可能不存在，改用 devfreq 的 available_frequencies 兜底
         static const char* paths[] = {
             "/sys/class/kgsl/kgsl-3d0/gpu_available_frequencies",
@@ -349,7 +349,7 @@ public:
         if (tryGpuPath("/sys/class/devfreq/13040000.mali/max_freq", mhzMax, true, false, "max"))
             return true;
 
-        // [Fix v4.6] 增加 SM8850/Adreno 8x 时代的标准 devfreq 路径
+        // [Fix] 增加 SM8850/Adreno 8x 时代的标准 devfreq 路径
         //            新内核 devfreq 子系统挂载在 /sys/class/devfreq/<addr>.qcom,kgsl-3d0/
         //            旧的 /sys/class/kgsl/kgsl-3d0/devfreq/ 是软链，可能不存在
         if (tryGpuPath("/sys/class/devfreq/3d00000.qcom,kgsl-3d0/max_freq",
@@ -396,7 +396,7 @@ public:
         if (tryGpuPath("/sys/class/devfreq/13040000.mali/min_freq", mhzMin, true, false, "min"))
             return true;
 
-        // [Fix v4.6] 同上，加 SM8850 标准 devfreq 路径
+        // [Fix] 同上，加 SM8850 标准 devfreq 路径
         if (tryGpuPath("/sys/class/devfreq/3d00000.qcom,kgsl-3d0/min_freq",
                        mhzMin, true, true, "min"))
             return true;
@@ -560,7 +560,7 @@ public:
         }
     }
 
-    // v4.2: 使用自定义频率值设置 GPU（应用画像用）
+    // : 使用自定义频率值设置 GPU（应用画像用）
     void gpuFreqControlCustom(const string_t& customMin, const string_t& customMax) {
         int mhzMin = Fastatoi(customMin.c_str());
         int mhzMax = Fastatoi(customMax.c_str());
@@ -596,7 +596,7 @@ public:
 
         logger.Info("GPU守护已启动，周期: 3秒");
 
-        // [Fix v4.1] 记录上一轮目标值，未变化时不重写（省 sysfs 抖动）
+        // [Fix] 记录上一轮目标值，未变化时不重写（省 sysfs 抖动）
         // 如果其他进程篡改了 GPU 频率，sysfs 上的实际值会与 latestGpu*Mhz 不一致，
         // 但要每次都读回比较代价更大；折中方案：值未变化时只在每 N 轮强制写一次确认。
         int lastWrittenMin = -1;
@@ -607,7 +607,7 @@ public:
             int mhzMin = Fastatoi(GpuFreq::min_freq.c_str());
             int mhzMax = Fastatoi(GpuFreq::max_freq.c_str());
 
-            // [Fix v4.6] 两个频率都未设置（都是 0/空） → 直接 sleep，避免误报"未生效"
+            // [Fix] 两个频率都未设置（都是 0/空） → 直接 sleep，避免误报"未生效"
             //            （这是合法状态：base mode 没配 GPU，AppProfile 也没配）
             if (mhzMin <= 0 && mhzMax <= 0) {
                 for (int i = 0; i < 30 && !gpuGuardShouldExit.load(); i++) {
@@ -635,7 +635,7 @@ public:
                     }
                     if ((!minOk && mhzMin > 0) || (!maxOk && mhzMax > 0)) {
                         bool pwrOk = tryGpuPwrlevel(mhzMax, mhzMin);
-                        // [Fix v4.6] 三条路径都失败 → 明确告警，方便用户排查权限/驱动问题
+                        // [Fix] 三条路径都失败 → 明确告警，方便用户排查权限/驱动问题
                         if (!pwrOk) {
                             logger.Warn("GPU频率写入全部失败 (min=%d max=%d) — 检查 root/SELinux/驱动支持",
                                         mhzMin, mhzMax);

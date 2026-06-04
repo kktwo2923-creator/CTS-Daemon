@@ -46,13 +46,13 @@ private:
     std::atomic<int>  keptGameModel{-1};        // 游戏会话保活: 当前锁定的游戏模型索引(-1=未保活)
     std::string       lastGovWritten[4];        // 游戏护航: 每簇本会话已决定的 governor(空=未决定/簇还离线)
 
-    // [v4.1 dedup] 缓存上一次写入的 (min,max,gov)，相同则跳过 sysfs 写
+    // [dedup] 缓存上一次写入的 (min,max,gov)，相同则跳过 sysfs 写
     // 避免 None→Touch→None / 重复 applyScene 等抖动场景重复刷盘
     string_t lastMinFreq[4];
     string_t lastMaxFreq[4];
     string_t lastGovernor[4];
 
-    // [Fix v4.3] 原版 char temp[256] 是 class 成员，多线程并发写同一 buffer 会乱
+    // [Fix] 原版 char temp[256] 是 class 成员，多线程并发写同一 buffer 会乱
     //            把它从成员里删掉，FreqWriter / applyAppProfile / online 改用栈上 buffer
 public:
     Schedule& operator=(Schedule&&) = delete;
@@ -63,10 +63,10 @@ public:
         threads.emplace_back(thread(&Schedule::configTriggerTask, this));
         threads.emplace_back(thread(&Schedule::jsonTriggerTask, this));
         threads.emplace_back(thread(&Schedule::perappTriggerTask, this));
-        // [Fix v4.3] 去掉每秒一次的 configPollingTask —— 与 inotify 重复，纯费电
+        // [Fix] 去掉每秒一次的 configPollingTask —— 与 inotify 重复，纯费电
         threads.emplace_back(thread(&Schedule::cpuSetTriggerTask, this));
 
-        // [v4.7] 移除场景识别线程组（用户反馈：场景频繁切换导致 CPU 不降频，方案 Z）
+        // 移除场景识别线程组（用户反馈：场景频繁切换导致 CPU 不降频，方案 Z）
         //   - 不再有 Standby 熄屏压频（系统 Doze 自带）
         //   - 不再有 HeavyLoad / 突发负载 boost（交给 governor 的 up/down_rate_limit_us 处理）
         //   - 触摸/AmSwitch 等短时场景全部跳过
@@ -76,7 +76,7 @@ public:
         //   旧线程 sceneTickTask / screenStateTask / loadSamplingTask / touchDetectTask
         //   仍保留函数定义但不再启动，方便未来要回归 Standby/HeavyLoad 时切回去。
 
-        // v4.2 应用画像线程（独立于 LaunchBoost，通过 dumpsys 获取前台包名）
+        // 应用画像线程（独立于 LaunchBoost，通过 dumpsys 获取前台包名）
         if (Config::AppProfile::enable) {
             threads.emplace_back(thread(&Schedule::appProfileTask, this));
             // [Fix 小窗护核] cpuset 守护循环: 游戏档期间把 top-app 压在全核, 压制 ROM 反复收窄。
@@ -84,7 +84,7 @@ public:
         }
     }
 
-    // [Fix v4.4] qlib::string operator==(self,self) 在两个独立堆分配的 string_t 之间比较时是 UB
+    // [Fix] qlib::string operator==(self,self) 在两个独立堆分配的 string_t 之间比较时是 UB
     //            (distance(a.begin(), b.end()) 跨堆分配指针)。改用 strcmp 走 c_str()。
     static inline bool str_eq(const string_t& a, const string_t& b) {
         return strcmp(a.c_str(), b.c_str()) == 0;
@@ -114,7 +114,7 @@ public:
                      "/sys/devices/system/cpu/cpufreq/policy%d/affected_cpus", Policy);
         if (!utils.FileStartsWithDigit(affPath)) {
             logger.Debug("CPU簇: %d 无在线核,跳过 governor/频率", Policy);
-            // [Fix 问题2] 整簇离线被跳过时清掉该簇去重缓存。否则核心稍后重新上线、要写相同
+            // [Fix] 整簇离线被跳过时清掉该簇去重缓存。否则核心稍后重新上线、要写相同
             //   governor(如 hmbird)时, 会被开头的去重判为"已是该值"而跳过 → 刚上线的核
             //   停在内核默认(walt)。清掉缓存保证下次必写。
             if (cluster >= 0) {
@@ -132,7 +132,7 @@ public:
             FastSnprintf(path, sizeof(path), GovernorPath, Policy);
             bool ok = utils.FileWriteBlocking(path, Governor);
             if (!ok) {
-                // [Fix 问题4/9400e] 配置里的调速器不被当前 SoC 支持(如 8E 没有 hmbird、
+                // [Fix] 配置里的调速器不被当前 SoC 支持(如 8E 没有 hmbird、
                 //   天玑9400e 没有 walt)→ 写入失败, 整簇没人接管频率。回退到 SoC 默认调速器
                 //   (高通 walt / 非高通 sugov_ext)再写一次, 保证频率有人管。
                 string_t fb = function.checkQcom() ? "walt" : "sugov_ext";
@@ -178,7 +178,7 @@ public:
         }
     }
 
-    // [Fix 问题2] 返回 core 所属的 policy(起始核 <= core 的最大 CpuPolicy); 找不到返回 -1。
+    // [Fix] 返回 core 所属的 policy(起始核 <= core 的最大 CpuPolicy); 找不到返回 -1。
     int policyForCore(int core) {
         int best = -1;
         for (int i = 0; i <= 3; i++) {
@@ -188,7 +188,7 @@ public:
         return best;
     }
 
-    // [Fix 问题2] 等某个簇真正上线(affected_cpus 非空)。CPU 上线是异步 hotplug, 刚写完
+    // [Fix] 等某个簇真正上线(affected_cpus 非空)。CPU 上线是异步 hotplug, 刚写完
     //   online=1 时 affected_cpus 可能还没更新, 若此刻就写 governor 会被 FreqWriter 判
     //   "整簇离线"跳过 → 超大核(6-7)拿不到 hmbird/风驰。这里轮询等待(上限 timeoutMs)。
     void waitClusterReady(int policy, int timeoutMs = 80) {
@@ -205,7 +205,7 @@ public:
     }
 
     // ============================================================
-    //  v4.7 简化：去掉 Scenes 对 CPU 频率的覆盖
+    //  简化：去掉 Scenes 对 CPU 频率的覆盖
     //  - 不再有 Standby 熄屏压频（系统 Doze 已经管这块）
     //  - 不再有 HeavyLoad / 突发负载 boost（交给 governor 的 up/down_rate_limit_us 处理）
     //  - 整个函数等价于 Release —— CPU 写基础 mode 频率
@@ -220,7 +220,7 @@ public:
     }
 
     // ============================================================
-    //  v4.2 应用画像应用 — 场景分类画像
+    //  应用画像应用 — 场景分类画像
     //
     //  参考 Way_Balance 设计：
     //  - 按场景分类定义策略（如 game_heavy, daily_lite）
@@ -258,7 +258,7 @@ public:
                     if (model.Online[i] == 1) broughtOnline = true;
                     logger.Debug("画像核心: %d %s", i, model.Online[i] ? "开启" : "关闭");
                 }
-                // [Fix 问题2] 等被点亮的簇真正上线再写频率/调速器, 确保 hmbird 落到 6-7 等刚上线的核
+                // [Fix] 等被点亮的簇真正上线再写频率/调速器, 确保 hmbird 落到 6-7 等刚上线的核
                 if (broughtOnline) {
                     for (int i = 0; i <= 7; i++)
                         if (model.Online[i] == 1) waitClusterReady(policyForCore(i));
@@ -274,7 +274,7 @@ public:
         for (int i = 0; i <= 3; i++) {
             if (Policy::CpuPolicy[i] == -1) continue;
 
-            // [v4.7] 二级回退（去掉中间 SceneFreq 层）：AppProfile -> Performances
+            // 二级回退（去掉中间 SceneFreq 层）：AppProfile -> Performances
             const string_t& minF = !model.MinFreq[i].empty() ? model.MinFreq[i]
                                                               : Performances::MinFreq[i];
             const string_t& maxF = !model.MaxFreq[i].empty() ? model.MaxFreq[i]
@@ -296,7 +296,7 @@ public:
         for (int i = 0; i <= 3; i++) {
             if (Policy::CpuPolicy[i] == -1) continue;
             if (model.SchedParamCount[i] == 0) continue;
-            // [v4.7] 二级回退：AppProfile -> Performances
+            // 二级回退：AppProfile -> Performances
             const string_t& gov = !model.Governor[i].empty() ? model.Governor[i]
                                                               : Performances::CpuGovernor[i];
             if (gov.empty()) continue;
@@ -328,17 +328,17 @@ public:
             FreqWriter(Policy::CpuPolicy[i], Performances::MinFreq[i], 
                     Performances::MaxFreq[i], Performances::CpuGovernor[i]);
         }
-        // [Fix v4.7] Release 也要重新写基础 SchedParam（governor tunables）
+        // [Fix] Release 也要重新写基础 SchedParam（governor tunables）
         //            否则游戏退出后 governor 仍保留游戏画像里的
         //            up/down_rate_limit_us / hispeed_freq 等，导致 CPU 不降频。
         //            这是"CPU 怎么都不降频"的根本原因之一。
         SchedParam();
-        // [Fix v4.6] Release 也要还原基础 GPU 频率
+        // [Fix] Release 也要还原基础 GPU 频率
         applyBaseGpu();
         function.FeasFunc(false);
     }
 
-    // [Fix v4.6] 把 GPU 频率写回基础 mode 设定
+    // [Fix] 把 GPU 频率写回基础 mode 设定
     //   AppProfile 用 gpuFreqControlCustom 写画像的 GPU 频率；
     //   退出画像匹配（回桌面）/进入 Scene 时必须主动把 GPU 还原，否则要等
     //   gpuFreqGuard 最长 15s 才生效，期间 GPU 卡在游戏高频上耗电。
@@ -399,7 +399,7 @@ public:
     }
 
     // 统一的频率应用入口：自动判断是否使用应用画像
-    // [v4.7] 简化：scene 永远是 None（场景识别已禁用），二选一：画像 or 基础 mode
+    // 简化：scene 永远是 None（场景识别已禁用），二选一：画像 or 基础 mode
     void applyWithProfile(SceneDetector::Scene scene) {
         std::lock_guard<std::recursive_mutex> lk(applyMtx);
         int matchIdx = Config::AppProfile::currentMatch.load();
@@ -422,7 +422,7 @@ public:
         }
         if (anyDefined) {
             online();
-            // [Fix 问题2] 全局模式(如全局风驰)同样: 等刚点亮的簇真正上线再写 governor,
+            // [Fix] 全局模式(如全局风驰)同样: 等刚点亮的簇真正上线再写 governor,
             //   否则超大核 6-7 来不及上线 → FreqWriter 跳过 → 保持 walt。
             for (int i = 0; i <= 7; i++)
                 if (Performances::Online[i] == 1) waitClusterReady(policyForCore(i));
@@ -435,7 +435,7 @@ public:
     void online() {
         char path[256];
         for (int i = 0; i <= 7; i++) {
-            if (Performances::Online[i] == -1) continue; // [Fix v4.3] -1 = 跳过，不再误关核心
+            if (Performances::Online[i] == -1) continue; // [Fix] -1 = 跳过，不再误关核心
             FastSnprintf(path, sizeof(path), onlinePath, i);
             utils.WriteInt(path, Performances::Online[i]);
             logger.Debug("核心: %d %s", i, Performances::Online[i] ? "开启" : "关闭");
@@ -468,7 +468,7 @@ public:
         function.gpuFreqControl();
     }
 
-    // [Fix v4.1] 删除了 FileState / getFileState / fileStateChanged / reloadRuntimeConfig 等
+    // [Fix] 删除了 FileState / getFileState / fileStateChanged / reloadRuntimeConfig 等
     //            polling 时代的 dead code（已由 inotify 覆盖）
 
     /**
@@ -567,8 +567,8 @@ public:
                 continue;
             }
             if (conf.readConfig()) {
-                // [Fix v4.4] readConfig 内部已 setLogLevel，无需重复
-                function.ReloadFunC();   // [Fix v4.1] 用 ReloadFunC 而非 AllFunC（不重启守护线程）
+                // [Fix] readConfig 内部已 setLogLevel，无需重复
+                function.ReloadFunC();   // [Fix] 用 ReloadFunC 而非 AllFunC（不重启守护线程）
                 applyAllConfig();
                 lastHash = h;
             } else {
@@ -637,14 +637,14 @@ public:
         return;
     }
 
-    // [v4.7 cleanup] 已移除整组场景识别线程（sceneTickTask / screenStateTask /
+    // [cleanup] 已移除整组场景识别线程（sceneTickTask / screenStateTask /
     //   loadSamplingTask / readProcStat / touchDetectTask / openTouchDevices /
-    //   netlinkScreenLoop）——这些函数在 v4.7 后从未被启动，属编译进二进制的死代码。
+    //   netlinkScreenLoop）——这些函数在 后从未被启动，属编译进二进制的死代码。
     //   频率响应已完全交给 governor 的 up/down_rate_limit_us / hispeed_load。
-    //   如需回归 Standby/HeavyLoad，可从 git 历史 v4.6 恢复。
+    //   如需回归 Standby/HeavyLoad，可从 git 历史 恢复。
 
     // ============================================================
-    //  v4.2 应用画像监控线程 — 场景分类画像
+    //  应用画像监控线程 — 场景分类画像
     //
     //  参考 Way_Balance 设计：
     //  - 通过 dumpsys window 获取当前前台应用包名
@@ -942,7 +942,7 @@ public:
         lastTopApp = pkg;
         int newMatch = Config::AppProfile::findMatchingModel(pkg.c_str());
 
-        // [Fix v4.1] currentMatch 是 atomic
+        // [Fix] currentMatch 是 atomic
         // 去重: 新包名匹配到的画像与当前相同(含两者都是默认模式 -1)→ 不重复覆盖频率, 直接跳过。
         int oldMatch = Config::AppProfile::currentMatch.load();
         if (newMatch != oldMatch) {
@@ -963,7 +963,7 @@ public:
     void appProfileTask() {
         sleep(5); // 等待系统启动完成
 
-        // [v4.7+] 事件驱动 + 尾沿防抖: 阻塞监听 top-app cpuset 变动(前台切换), 替代固定轮询。
+        // 事件驱动 + 尾沿防抖: 阻塞监听 top-app cpuset 变动(前台切换), 替代固定轮询。
         //   收益: 切换响应快、空闲零唤醒(省电)。inotify 不可用时自动回退到轮询。
         //
         //   [关键] 检测(取包名)可以快; 但"重操作"(写 scaling_max/min、切核)绝不能每个事件都做。
@@ -994,7 +994,7 @@ public:
         while (true) {
             // 熄屏时降低活动频率(省电); 此时不阻塞监听, 定期轻量复查
             if (scene_.current() == SceneDetector::Scene::Standby) {
-                utils.sleep_ms(8000);   // v4.3: 5s -> 8s
+                utils.sleep_ms(8000);   // : 5s -> 8s
                 continue;
             }
 
@@ -1097,7 +1097,7 @@ public:
         }
 
         logger.clear_log();
-        // [Fix v4.4] readConfig 内部已在解析 meta 后立即 setLogLevel，
+        // [Fix] readConfig 内部已在解析 meta 后立即 setLogLevel，
         // 所以这里的「名称/版本/作者」banner 必须放在 readConfig 之后才能受 loglevel 控制；
         // 同时不需要再次 setLogLevel 了。
         bool configOk = conf.readConfig();
@@ -1105,7 +1105,7 @@ public:
         logger.Info("版本: %d",       Meta::version);
         logger.Info("作者: %s",       Meta::author.c_str());
         logger.Info("日志等级: %s",   Meta::loglevel.c_str());
-        function.AllFunC();   // [Fix v4.3] AllFunC -> startGuards() 已经会启 GPU 守护线程
+        function.AllFunC();   // [Fix] AllFunC -> startGuards() 已经会启 GPU 守护线程
         if (configOk) {
             release();
             online();
@@ -1114,6 +1114,6 @@ public:
         } else {
             logger.Warn("初始配置加载失败，尝试使用默认配置");
         }
-        // [Fix v4.3] 删掉这里第二次启动 gpuFreqGuard 的代码（与 AllFunC 重复，会跑两条守护线程）
+        // [Fix] 删掉这里第二次启动 gpuFreqGuard 的代码（与 AllFunC 重复，会跑两条守护线程）
     }
 };
