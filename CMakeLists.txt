@@ -45,6 +45,13 @@ find_package(Threads REQUIRED)
 # Executable
 add_executable(CoreTurboScheduler ${SOURCES})
 
+# 体验版开关: -DCTS_TRIAL=ON 编出 24 小时试用版(到期自动停止/启动失败)
+option(CTS_TRIAL "Build 24-hour trial edition (auto-stop after 24h)" OFF)
+if(CTS_TRIAL)
+    target_compile_definitions(CoreTurboScheduler PRIVATE CTS_TRIAL)
+    message(STATUS "[CTS] 体验版构建: 启用 24 小时试用限制")
+endif()
+
 # Link libraries
 target_link_libraries(CoreTurboScheduler PRIVATE Threads::Threads)
 
