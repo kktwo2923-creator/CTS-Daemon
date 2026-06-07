@@ -1,4 +1,4 @@
-// By Ktwo  --  v4.3 重构：对齐 Way_Balance 格式
+// By Ktwo  --  重构：对齐 Way_Balance 格式
 #pragma once
 #include <iostream>
 #include <fstream>
@@ -66,14 +66,14 @@ namespace Config {
 
     // ---------- GpuFreq（GPU 频率控制）----------
     namespace GpuFreq {
-        bool     enable   = true;   // [Fix v4.3] 新增 enable 字段（旧版本编译报错的原因）
+        bool     enable   = true;   // [Fix] 新增 enable 字段（旧版本编译报错的原因）
         string_t min_freq;           // MHz，字符串保留兼容
         string_t max_freq;           // MHz
     }
 
     // ---------- Performances（基础频率，由当前 mode 选择的 model 填充）----------
     namespace Performances {
-        int      Online[8]    = { -1, -1, -1, -1, -1, -1, -1, -1 };  // [Fix v4.3] 默认 -1（跳过），不再误把核心关掉
+        int      Online[8]    = { -1, -1, -1, -1, -1, -1, -1, -1 };  // [Fix] 默认 -1（跳过），不再误把核心关掉
         string_t MinFreq[4];
         string_t MaxFreq[4];
         string_t CpuGovernor[4];
@@ -82,7 +82,7 @@ namespace Config {
     // ============================================================
     //  场景化频率（SceneFreq）
     //  按场景覆盖 Performances，缺省字段继承 Performances 基础值
-    //  v4.3 省电改动：默认仅启用 Standby 场景的低频覆盖
+    //  省电改动：默认仅启用 Standby 场景的低频覆盖
     // ============================================================
     namespace SceneFreq {
         constexpr int SCENE_COUNT = 5;       // None / Touch / AmSwitch / HeavyLoad / Standby
@@ -103,7 +103,7 @@ namespace Config {
         int heavy_max_duration_ms = 3000;
         int request_burst_slack_ms= 2000;
 
-        // [v4.5] 突发负载（类卡顿）检测 —— uperf/FAS 风格的 burst boost
+        // 突发负载（类卡顿）检测 —— uperf/FAS 风格的 burst boost
         // 真正的 frame-level jank 需要 SurfaceFlinger/fpsgo 数据源，CTS 暂无此接入；
         // 退而求其次：两次采样间负载跳变超过 burst_delta_thd，且 curLoad >= burst_min_load
         // → 视为"类卡顿事件"，立即进入 HeavyLoad 触发 boost 频率（与 HeavyLoad 共享上限）
@@ -114,7 +114,7 @@ namespace Config {
         int am_switch_duration_ms = 1500;
         int touch_duration_ms     = 1000;
 
-        // 采样间隔 -- v4.3 默认延长（省电）
+        // 采样间隔 -- 默认延长（省电）
         int load_sample_interval_ms = 2000;   // 1s -> 2s
         int screen_poll_interval_ms = 3000;   // 2s -> 3s（仅 fallback 时使用）
 
@@ -127,7 +127,7 @@ namespace Config {
     }
 
     // ============================================================
-    //  AppProfile 应用画像（v4.3 重构：Way_Balance 扁平格式）
+    //  AppProfile 应用画像（重构：Way_Balance 扁平格式）
     //
     //  JSON 结构：
     //    "package_blacklist": [...],
@@ -187,12 +187,12 @@ namespace Config {
         int      perAppCount = 0;
         string_t perAppGlobal;              // 全局默认模式(* 行),可空
 
-        // [Fix v4.1] currentMatch 被多个线程读、单线程写 → 必须 atomic
+        // [Fix] currentMatch 被多个线程读、单线程写 → 必须 atomic
         // 含义：>=0 表示当前匹配到了 packages 非空的"应用画像"模型；
         //       -1 表示没有匹配的应用画像（此时仅用基础模型 + SceneFreq）
         std::atomic<int> currentMatch{-1};
 
-        // [Fix v4.3] 迭代式通配符匹配，避免递归爆栈
+        // [Fix] 迭代式通配符匹配，避免递归爆栈
         inline bool matchPackage(const char* pattern, const char* pkg) {
             const char* star = nullptr;   // 上次 '*' 的位置
             const char* mark = nullptr;   // pkg 在那次 '*' 后的起点
@@ -248,6 +248,13 @@ namespace Config {
                     if (matchPackage(Models[i].packages[j].c_str(), pkg)) return i;
                 }
             }
+            // [Fix] 仍无匹配(桌面/QQ/微信等未配画像的应用)→ 回退到全局默认模式
+            //   (perapp_powermode.txt 的 "* <模式>" 行)。否则这些应用会停在
+            //   上一个 App(如游戏的风驰)的档位,无法回落到省电/均衡。
+            if (!perAppGlobal.empty()) {
+                int idx = findModelByName(perAppGlobal.c_str());
+                if (idx >= 0) return idx;
+            }
             return -1;
         }
     }
@@ -255,7 +262,7 @@ namespace Config {
     // ---------- Netlink uevent 屏幕监听 ----------
     namespace NetlinkCfg {
         bool enable           = true;
-        int  fallback_poll_ms = 3000;   // v4.3 默认 3s（省电）
+        int  fallback_poll_ms = 3000;   // 默认 3s（省电）
     }
 
     // ---------- 全局 SchedParam（被基础 model 写入）----------

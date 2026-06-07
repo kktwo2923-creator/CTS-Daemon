@@ -162,10 +162,10 @@
                 "Core7": "1"
             },
             "gov_c0": {
-                "governor": "hmbird"
+                "governor": "scx"
             },
             "gov_c1": {
-                "governor": "hmbird"
+                "governor": "scx"
             }
         },
         {
@@ -215,31 +215,10 @@
                 "Core7": "1"
             },
             "gov_c0": {
-                "governor": "hmbird"
+                "governor": "scx"
             },
             "gov_c1": {
-                "governor": "hmbird"
-            }
-        },
-        {
-            "model_name": "game_lite",
-            "is_game": true,
-            "packages": [
-                "com.tencent.tmgp.cf",
-                "com.tencent.lolm",
-                "com.netease.party"
-            ],
-            "freq_min_c0": "1200000",
-            "freq_max_c0": "5000000",
-            "freq_min_c1": "1200000",
-            "freq_max_c1": "5000000",
-            "gpu_min_mhz": "0",
-            "gpu_max_mhz": "1000",
-            "gov_c0": {
-                "governor": "walt"
-            },
-            "gov_c1": {
-                "governor": "walt"
+                "governor": "scx"
             }
         },
         {

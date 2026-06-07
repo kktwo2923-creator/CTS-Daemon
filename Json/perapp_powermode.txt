@@ -1,4 +1,4 @@
-# 应用画像: 包名 模式(powersave/balance/performance/fast/game_heavy/game_lite/video/social/reading/music)
+# 应用画像: 包名 模式(powersave/balance/performance/fast/game_heavy/video/social/reading/music)
 # 第一行 * 开头为全局默认
 * balance
 
@@ -27,9 +27,9 @@ com.tencent.KiHan game_heavy
 com.tencent.jkchess game_heavy
 com.tencent.mf.uam game_heavy
 com.tencent.nrc game_heavy
-com.tencent.tmgp.cf game_lite
-com.tencent.lolm game_lite
-com.netease.party game_lite
+com.tencent.tmgp.cf game_heavy
+com.tencent.lolm game_heavy
+com.netease.party game_heavy
 com.ss.android.ugc.aweme video
 com.smile.gifmaker video
 com.kuaishou.nebula video

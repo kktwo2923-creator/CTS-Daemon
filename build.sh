@@ -42,11 +42,13 @@ build_abi() {
     cd "$BUILD_DIR"
 
     echo "[*] Configuring CMake..."
+    # TRIAL=1 ./build.sh → 编出 24 小时体验版(到期自动停止/启动失败)
     cmake \
         -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK/build/cmake/android.toolchain.cmake" \
         -DANDROID_ABI="$ABI" \
         -DANDROID_PLATFORM="$ANDROID_PLATFORM" \
         -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
+        -DCTS_TRIAL="${TRIAL:-OFF}" \
         -GNinja \
         ../..
 
