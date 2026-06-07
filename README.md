@@ -1,13 +1,42 @@
-# CoreTurboScheduler (CTS) 
+<div align="center">
 
-> **一句话**：6+2 架构专用调度配置，省电 + 应用画像 + governor 自主调频。
+# CoreTurboScheduler · CTS
+
+**骁龙 8 至尊版(8 Elite Gen 5 / SM8850)6+2 架构专用 CPU 调度守护进程**
+
+省电优先 · 应用画像 · governor 自主调频
+
+[![License](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](#协议)
+[![Version](https://img.shields.io/badge/version-v4.7-brightgreen.svg)](#v47-更新摘要)
+[![SoC](https://img.shields.io/badge/SoC-SM8850%20·%208e5-red.svg)](#)
+[![App](https://img.shields.io/badge/前端-接管助手-orange)](https://github.com/kktwo2923-creator/CTS)
+
+</div>
+
+---
+
+## 这是什么
+
+**CoreTurboScheduler(CTS)** 是面向 **骁龙 8 至尊版(8 Elite Gen 5,SM8850)** 的 CPU 调度守护进程:
+它只设定各模式的频率上下限与 governor 参数,把实际的升降频节奏交给内核 governor(walt / schedutil / hmbird)自己完成 —— 既省电又跟手。
+
+可单独用 `mode.txt` 切换模式;也可搭配图形前端 [CTS 接管助手](https://github.com/kktwo2923-creator/CTS) 按应用画像自动接管。
+
+- **针对芯片**:SM8850 / 骁龙 8 至尊版 / 8 Elite Gen 5(8e5)
+- **架构**:6 × Pegasus 小核 + 2 × Phoenix-Prime 大核
+
+## 核心特性
+
+- 🪶 **极简调频模型** —— 只管上下限 + governor 参数,频率响应交给 governor(v4.7 起移除场景识别)
+- 🔋 **四种模式** —— powersave / balance / performance / fast(风驰),一行命令即时切换
+- 🎯 **应用画像** —— 按包名匹配模型,游戏自动拉满,退出自动还原
+- ⚙️ **governor 自主调频** —— 用 `up_rate_limit_us` / `down_rate_limit_us` / `hispeed_load` 精细控制升降频节奏
+- 📉 **真正能降频** —— 修复退出游戏后 SchedParam 不还原、场景频繁重写上限导致 CPU 粘高频的老问题
+- 🧩 **配置精简** —— v4.5 起常用模块默认开启,config 只写需要覆盖的部分
+
+> **设计思路**参考 [yumi](https://github.com/imacte/yumi) 与 [MW_CpuTurboScheduler](https://github.com/MoWei-2077/MW_CpuTurboScheduler)。
 >
-> **v4.7 重大改动**：**移除场景识别（Scenes / Standby / HeavyLoad / Touch）**，
-> 频率响应交给 governor 的 `up_rate_limit_us` / `down_rate_limit_us` 处理。
-> 参考 [yumi](https://github.com/imacte/yumi) 和 [MW_CpuTurboScheduler](https://github.com/MoWei-2077/MW_CpuTurboScheduler) 的设计思路。
-
-针对芯片：**SM8850 / 骁龙 8 至尊版 / 8 Elite Gen 5（8e5）**
-架构：6 × Pegasus 小核 + 2 × Phoenix-Prime 大核
+> **v4.7 重大改动**:移除场景识别(Scenes / Standby / HeavyLoad / Touch),频率响应改由 governor 的 `up_rate_limit_us` / `down_rate_limit_us` 处理。详见 [v4.7 更新摘要](#v47-更新摘要)。
 
 ---
 
@@ -296,4 +325,6 @@ scene 每秒切换多次 → 重写 `scaling_max_freq` → governor 看到上限
 
 ---
 
-**协议**: GPL-3.0
+## 协议
+
+GPL-3.0
