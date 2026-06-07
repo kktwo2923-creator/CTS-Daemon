@@ -2,8 +2,6 @@
 
 > **一句话**：6+2 架构专用调度配置，省电 + 应用画像 + governor 自主调频。
 >
-> **v4.7 重大改动**：**移除场景识别（Scenes / Standby / HeavyLoad / Touch）**，
-> 频率响应交给 governor 的 `up_rate_limit_us` / `down_rate_limit_us` 处理。
 > 参考 [yumi](https://github.com/imacte/yumi) 和 [MW_CpuTurboScheduler](https://github.com/MoWei-2077/MW_CpuTurboScheduler) 的设计思路。
 
 针对芯片：**SM8850 / 骁龙 8 至尊版 / 8 Elite Gen 5（8e5）**
