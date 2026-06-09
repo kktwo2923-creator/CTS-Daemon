@@ -41,10 +41,6 @@ private:
 
     bool cpuBoost = false;
     std::string lastTopApp;          // 上一次前台应用包名（用于画像切换去重）
-    std::string lastReassertCpus;    // 游戏小窗护核: 上次实测的 top-app cpus(仅状态变化才记日志, 防刷屏)
-    std::atomic<bool> keeperShouldExit{false};  // cpuset 守护循环退出标志
-    std::atomic<int>  keptGameModel{-1};        // 游戏会话保活: 当前锁定的游戏模型索引(-1=未保活)
-    std::string       lastGovWritten[4];        // 游戏护航: 每簇本会话已决定的 governor(空=未决定/簇还离线)
 
     // [dedup] 缓存上一次写入的 (min,max,gov)，相同则跳过 sysfs 写
     // 避免 None→Touch→None / 重复 applyScene 等抖动场景重复刷盘
@@ -79,8 +75,6 @@ public:
         // 应用画像线程（独立于 LaunchBoost，通过 dumpsys 获取前台包名）
         if (Config::AppProfile::enable) {
             threads.emplace_back(thread(&Schedule::appProfileTask, this));
-            // [Fix 小窗护核] cpuset 守护循环: 游戏档期间把 top-app 压在全核, 压制 ROM 反复收窄。
-            threads.emplace_back(thread(&Schedule::cpusetKeeperTask, this));
         }
     }
 
@@ -676,84 +670,12 @@ public:
         return 1;                          // 有事件
     }
 
-    // 读 sysfs/cpuset 节点首段并去掉尾部空白/换行。失败返回 false 且 out 置空串。
-    bool readTrimmedNode(const char* p, char* out, size_t cap) {
-        out[0] = '\0';
-        int fd = open(p, O_RDONLY | O_CLOEXEC);
-        if (fd < 0) return false;
-        ssize_t n = read(fd, out, cap - 1);
-        close(fd);
-        if (n <= 0) { out[0] = '\0'; return false; }
-        out[n] = '\0';
-        for (ssize_t i = n - 1; i >= 0 &&
-             (out[i] == '\n' || out[i] == '\r' || out[i] == ' ' || out[i] == '\t'); --i)
-            out[i] = '\0';
-        return true;
-    }
-
-    // top-app"应有的全核范围": 优先用配置 Cpuset::top_app(用户显式设过), 否则用当前全部
-    //   在线 CPU(/sys/devices/system/cpu/online), 这样即便没启用 cpuset 配置也能护住全核。
-    bool computeFullCpus(char* out, size_t cap) {
-        if (Config::Cpuset::enable && !Config::Cpuset::top_app.empty()) {
-            snprintf(out, cap, "%s", Config::Cpuset::top_app.c_str());
-            return out[0] != '\0';
-        }
-        return readTrimmedNode("/sys/devices/system/cpu/online", out, cap);
-    }
-
-    // 把 top-app cpuset 压回全核范围。被收窄才写(幂等), 返回是否执行了写入。
-    //   [关键] cpuset 约束: 子集必须 ⊆ 父集。实测此 ROM 把 top-app/foreground 连同父级
-    //   (root /dev/cpuset)一起收到 0-5 → 直接写 top-app=0-7 会被内核拒绝/截断(看似写了实则
-    //   没生效)。所以先把父(root)放开到全核, 再写 top-app/foreground。background/system-background
-    //   不动(它们本就该限制在小核)。无 dumpsys/无日志, 供高频守护循环调用。
-    bool enforceTopAppFullCpus() {
-        char desired[64] = { 0 };
-        if (!computeFullCpus(desired, sizeof(desired)) || !desired[0]) return false;
-        char cur[64] = { 0 };
-        readTrimmedNode("/dev/cpuset/top-app/cpus", cur, sizeof(cur));
-        if (strcmp(cur, desired) == 0) return false;   // 未被收窄 → 不写
-        utils.FileWrite("/dev/cpuset/cpus", desired);          // 先放开父集(内核禁改 root 时写失败无副作用)
-        utils.FileWrite("/dev/cpuset/top-app/cpus", desired);
-        utils.FileWrite("/dev/cpuset/foreground/cpus", desired);
-        return true;
-    }
-
-    // 游戏被小窗盖住时把 top-app cpuset 拉回全核 + 回读校验 + 记日志(仅状态变化时, 防刷屏)。
-    //   守卫路径(低频, 开小窗那一刻)用它; 高频守护循环用上面的 enforceTopAppFullCpus(静默)。
-    void reassertGameTopAppCpus() {
-        char desired[64] = { 0 };
-        if (!computeFullCpus(desired, sizeof(desired)) || !desired[0]) return;
-        char cur[64] = { 0 };
-        readTrimmedNode("/dev/cpuset/top-app/cpus", cur, sizeof(cur));
-        if (strcmp(cur, desired) == 0) { lastReassertCpus.assign(cur); return; }
-
-        utils.FileWrite("/dev/cpuset/cpus", desired);
-        utils.FileWrite("/dev/cpuset/top-app/cpus", desired);
-        utils.FileWrite("/dev/cpuset/foreground/cpus", desired);
-
-        // 读回实测值: 写入是否真生效只能看这里(不能只信"写了")。仅在状态变化时记日志, 防刷屏。
-        char after[64] = { 0 };
-        readTrimmedNode("/dev/cpuset/top-app/cpus", after, sizeof(after));
-        if (lastReassertCpus != after) {
-            if (strcmp(after, desired) == 0) {
-                logger.Info("游戏小窗: top-app cpuset 被收窄(%s) → 已拉回全核 %s", cur, after);
-            } else {
-                char root[64] = { 0 };
-                readTrimmedNode("/dev/cpuset/cpus", root, sizeof(root));
-                logger.Warn("游戏小窗: 拉回全核未生效 目标=%s 实测 top-app=%s root=%s "
-                            "(父集受限或被 ROM 即时改回)",
-                            desired, after[0] ? after : "?", root[0] ? root : "?");
-            }
-            lastReassertCpus.assign(after);
-        }
-    }
 
     // [Best practice §5/#4] 把本守护进程自身的线程钉在低位核, 避免调度器守护自己抢占前台
     //   游戏最吃紧的超大核(参考 uperf: 控制器线程绑小核)。骁龙 8 Elite 是 2+6 无小核, 故选
     //   性能簇低位核 0-3, 避开 6-7 两颗 Oryon 超大核; 兼容传统 big.LITTLE(0-3 即小核)。
     //   在创建任何工作线程之前对主线程设亲和性 → 后续 new thread 继承之, 全进程生效。
-    //   守护线程本就大多阻塞/低频, 钉低位核不影响其及时性(reassert/keeper 容忍 ms~200ms 抖动);
-    //   且不降优先级, 以保证与 ORMS 抢写 cpuset 时仍能及时压回。失败仅记日志, 不影响功能。
+    //   守护线程本就大多阻塞/低频(inotify 等待), 钉低位核不影响其及时性。失败仅记日志, 不影响功能。
     void pinSelfToLittleCores() {
         cpu_set_t set;
         CPU_ZERO(&set);
@@ -764,132 +686,7 @@ public:
             logger.Debug("绑定低位核失败 errno=%d(忽略, 不影响功能)", errno);
     }
 
-    // 当前是游戏档才把 top-app 压回全核。供"即时压制"(inotify 事件)与守护循环共用。
-    //   纯 cpuset 文件读写、幂等(未被收窄不写), 极轻量。
-    void maybeEnforceGameCpus() {
-        int cur = Config::AppProfile::currentMatch.load();
-        if (cur >= 0 && cur < Config::AppProfile::modelCount
-            && Config::AppProfile::Models[cur].isGame)
-            enforceTopAppFullCpus();
-    }
 
-    // [Fix 超大核拿不到 scx] 游戏护航: 确保游戏模型每个"已上线"的簇的 cpufreq governor == 配置值。
-    //   根因: 超大核(policy6)受 core_ctl 控制, 刚进游戏负载未起时还没上线 → applyAppProfile 里
-    //   FreqWriter 那一刻 affected_cpus 为空被"无在线核"静默跳过 → 超大核停在内核默认(walt),
-    //   之后没人补写。本函数每秒巡检: 簇已上线但 governor 不对就补写; 读实际 sysfs 比对, 不依赖
-    //   FreqWriter 的去重缓存(那是盲区)。写失败(该簇不支持此 governor, 如 scx 只在小核簇暴露)
-    //   → 回退 SoC 默认并告警一次(lastGovWritten 记最终值, 防每秒刷屏/重试)。
-    void enforceGameGovernors(int idx) {
-        const auto& m = Config::AppProfile::Models[idx];
-        for (int i = 0; i <= 3; i++) {
-            int policy = Config::Policy::CpuPolicy[i];
-            if (policy < 0) continue;
-            // [跟随系统] governor 留空 → 不护航该簇(跟随系统), 不回退基础模式
-            const string_t& gov = m.Governor[i];
-            if (gov.empty()) continue;
-
-            char aff[256];
-            FastSnprintf(aff, sizeof(aff),
-                         "/sys/devices/system/cpu/cpufreq/policy%d/affected_cpus", policy);
-            if (!utils.FileStartsWithDigit(aff)) continue;   // 簇仍离线 → 等它上线再决定
-
-            char gp[256];
-            FastSnprintf(gp, sizeof(gp), GovernorPath, policy);
-            char cur[64] = { 0 };
-            readTrimmedNode(gp, cur, sizeof(cur));
-
-            if (!lastGovWritten[i].empty()) {
-                // 本会话已决定该簇 governor。若决定值就是配置目标且被 ORMS 改走 → 写回(防抢)。
-                if (lastGovWritten[i] == gov.c_str() && strcmp(cur, gov.c_str()) != 0)
-                    utils.FileWriteBlocking(gp, gov);
-                continue;
-            }
-            // 首次决定(该簇刚上线)
-            if (strcmp(cur, gov.c_str()) == 0) { lastGovWritten[i] = gov.c_str(); continue; }
-            if (utils.FileWriteBlocking(gp, gov)) {
-                logger.Info("游戏护航: policy%d 调速器补写 %s (原 %s)", policy, gov.c_str(), cur);
-                lastGovWritten[i] = gov.c_str();
-            } else {
-                string_t fb = function.checkQcom() ? "walt" : "sugov_ext";
-                if (fb != gov) utils.FileWriteBlocking(gp, fb);
-                logger.Warn("游戏护航: policy%d 不支持 %s, 已回退 %s(该簇请在 config 改用受支持的调速器)",
-                            policy, gov.c_str(), fb.c_str());
-                lastGovWritten[i] = fb.c_str();
-            }
-        }
-    }
-
-    // 指定(游戏)模型的包名是否仍"在前台/可见"。判据: 前台快照里任一可见 Task 的包名
-    //   findMatchingModel 仍命中该模型 → 还在游戏(支持通配符包名)。dumpsys 失败(快照无效)→
-    //   保守返回 true(不因一次取值失败就误判游戏退出、放弃保活)。
-    bool isGameModelForeground(int idx) {
-        auto snap = utils.getForegroundCached(800);
-        if (!snap.valid) return true;
-        for (const auto& v : snap.visible)
-            if (Config::AppProfile::findMatchingModel(v.c_str()) == idx)
-                return true;
-        return false;
-    }
-
-    // [游戏会话保活守护] 首次进入游戏档(game_heavy 等 isGame 模型)即启用; 之后只要该游戏模型的
-    //   包名仍能在前台被检测到(top-app / 可见), 就把整套游戏画像(CPU 频率 / GPU 频率 / cpuset 0-7 /
-    //   核心在线)持续锁定, 无视小窗 / 通知栏 / 焦点切换 / ROM(ORMS)抢写。直到该游戏真的离开前台
-    //   (不可见)才退出保活、交回正常前台评估。
-    //   节流: top-app cpuset 每 200ms 即时压(便宜, 应对 ORMS 高频抢 cpuset); 在场检测 + 整套重写
-    //   每 ~1s 一次(一次 dumpsys + applyWithProfile, 靠各层 dedup 幂等, 频率多为 no-op, 不刷屏不顿挫)。
-    void cpusetKeeperTask() {
-        sleep(3);   // 等首次配置应用完成
-        int tick = 0;
-        while (!keeperShouldExit.load()) {
-            int kept = keptGameModel.load();
-
-            if (kept < 0) {
-                // 未保活: 当前是游戏档 *且* 游戏确实在前台可见时, 才启用守护。
-                //   [Fix busy-loop] 必须同时判"可见": 否则熄屏 / 游戏退后台但 currentMatch 残留
-                //   游戏档时, 会"启用→检测不可见→退出(continue 不 sleep)→currentMatch 仍游戏档→
-                //   又启用"无限空转(占满 CPU + 日志刷屏 + dumpsys 风暴)。
-                int cur = Config::AppProfile::currentMatch.load();
-                if (cur >= 0 && cur < Config::AppProfile::modelCount
-                    && Config::AppProfile::Models[cur].isGame
-                    && isGameModelForeground(cur)) {
-                    keptGameModel.store(cur);
-                    tick = 0;
-                    logger.Info("游戏会话保活已启用: %s",
-                                Config::AppProfile::Models[cur].modelName.c_str());
-                    continue;
-                }
-                utils.sleep_ms(1000);
-                continue;
-            }
-
-            // 保活中: 每 200ms 即时压 top-app cpuset(应对 ORMS 高频抢写)
-            enforceTopAppFullCpus();
-
-            // 每 ~1s: 检测游戏是否仍在前台 + 重写整套游戏画像
-            if ((tick++ % 5) == 0) {
-                if (isGameModelForeground(kept)) {
-                    std::lock_guard<std::recursive_mutex> lk(applyMtx);
-                    if (Config::AppProfile::currentMatch.load() != kept)
-                        Config::AppProfile::currentMatch.store(kept);   // 抵消误切, 锁回游戏档
-                    applyWithProfile(scene_.current());                  // 重写整套(频率/GPU/核心/cpuset, 幂等)
-                    enforceGameGovernors(kept);                          // 护航: 超大核上线后补写 scx 等
-                } else {
-                    // 游戏确实离开前台(不可见) → 结束保活, 交回正常前台评估
-                    logger.Info("游戏会话保活退出: %s 已不在前台",
-                                Config::AppProfile::Models[kept].modelName.c_str());
-                    {
-                        std::lock_guard<std::recursive_mutex> lk(applyMtx);
-                        keptGameModel.store(-1);
-                        for (int i = 0; i <= 3; i++) lastGovWritten[i].clear();   // 下次进游戏重新决定
-                        lastTopApp.clear();      // 让下次评估必走完整流程, 正确切到新前台
-                    }
-                    evalForegroundOnce(true);
-                    continue;                    // 不 sleep, 立即重判
-                }
-            }
-            utils.sleep_ms(200);
-        }
-    }
 
     // 取前台并按需切换画像。
     //   fresh=true: 强制取最新前台(事件驱动路径必须用,否则 getTopAppCached 的 TTL
@@ -929,14 +726,10 @@ public:
                 bool newIsGame = (nm >= 0 && Config::AppProfile::Models[nm].isGame);
                 if (!newIsGame &&
                     (utils.isPackageInTopApp(lastTopApp.c_str()) || utils.isPackageVisible(lastTopApp.c_str()))) {
-                    // [Fix 小窗收窄cpuset] 仅保持画像还不够: 部分 ROM(ColorOS/OplusOS)在小窗/浮窗
-                    //   (freeform)获焦瞬间会"只改 cpuset 不下线核心"地把 top-app cpuset 收窄,
-                    //   把超大核 6-7 踢出 → top-app 卡 0-5。原先这里只 return 不重写 cpuset,
-                    //   导致 ROM 的收窄固着(实测: 游戏仍在 top-app、cpu6/7 online, 却卡 0-5)。
-                    //   这里把 top-app cpuset 重新拉回应有的全核范围, 抵消 ROM 收窄。ROM 的收窄
-                    //   写入本身会触发 top-app inotify → 本路径被唤醒重判 → 事件驱动地纠正,
-                    //   无需轮询; 且幂等(实值==目标不写)避免与 ROM 来回 ping-pong 写风暴。
-                    reassertGameTopAppCpus();
+                    // [不抢 cpuset] 只在画像层保持游戏档不被切走; cpuset / 调速器交给系统,
+                    //   不再把 top-app 拉回全核 —— 那正是之前与 ROM 来回抢写、导致 cpuset 在
+                    //   0-7/2-7 之间抖动的根因。小窗只是覆盖, 游戏画像(频率/核心)保持即可。
+                    logger.Debug("小窗覆盖游戏(前台=%s, 游戏仍可见) → 保持游戏画像", pkg.c_str());
                     return;   // 游戏仍在前台, 小窗只是覆盖其上 → 保持游戏画像
                 }
             }
@@ -951,12 +744,11 @@ public:
         if (newMatch != oldMatch) {
             Config::AppProfile::currentMatch.store(newMatch);
             if (newMatch >= 0) {
-                logger.Info("前台应用切换: %s -> 匹配场景 '%s' (isGame=%d)",
-                            pkg.c_str(),
-                            Config::AppProfile::Models[newMatch].modelName.c_str(),
-                            Config::AppProfile::Models[newMatch].isGame ? 1 : 0);
+                const auto& mdl = Config::AppProfile::Models[newMatch];
+                logger.Info("前台: %s → 档[%s]%s", pkg.c_str(),
+                            mdl.modelName.c_str(), mdl.isGame ? " (游戏)" : "");
             } else {
-                logger.Info("前台应用切换: %s -> 无匹配场景画像", pkg.c_str());
+                logger.Info("前台: %s → 默认档(无匹配画像)", pkg.c_str());
             }
             // 应用新的频率策略(核心开关已在 applyAppProfile/restoreBaseCoresIfNeeded 内处理)
             applyWithProfile(scene_.current());
@@ -1014,15 +806,8 @@ public:
                 continue;
             }
 
-            // [Route B 即时压制] 收到 top-app cpuset 变动事件先无防抖地把 top-app 压回全核
-            //   (游戏档时;便宜、幂等)。ROM 的 ORMS 抢写 top-app/cpus 本身就会触发本事件 →
-            //   抵消其收窄的延迟从"尾沿防抖最长 1.2s"压到一次 inotify 往返(ms 级)。重操作
-            //   (取包名+画像)仍走下面的尾沿防抖。
-            //   注: 不在下面的防抖 while 里再调本函数 —— enforce 会读 top-app/cpus, 在 IN_ALL_EVENTS
-            //   监视下自己的读会生成 IN_ACCESS 事件, 在循环内调用会自我诱发、把防抖顶到 kMaxDeferMs。
-            //   持续抢写由 200ms 守护循环(cpusetKeeperTask)兜底, 此处只需即时压一次。
-            maybeEnforceGameCpus();
-
+            // top-app cpuset 变动 = 前台可能切了。不再做任何 cpuset 抢写(交给系统),
+            //   只走下面的尾沿防抖去取包名、按需切画像。
             // 尾沿防抖: 等前台安静下来再做重操作(取包名/切画像), 避免连切时频率写风暴
             int deferred = 0;
             while (deferred < kMaxDeferMs) {
