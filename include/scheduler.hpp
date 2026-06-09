@@ -279,8 +279,8 @@ public:
                                                               : Performances::MinFreq[i];
             const string_t& maxF = !model.MaxFreq[i].empty() ? model.MaxFreq[i]
                                                               : Performances::MaxFreq[i];
-            const string_t& gov  = !model.Governor[i].empty() ? model.Governor[i]
-                                                               : Performances::CpuGovernor[i];
+            // [跟随系统] governor 留空 = 跟随系统(不写, 不回退基础模式); 频率仍二级回退基础。
+            const string_t& gov  = model.Governor[i];
             FreqWriter(Policy::CpuPolicy[i], minF, maxF, gov);
         }
 
@@ -296,9 +296,8 @@ public:
         for (int i = 0; i <= 3; i++) {
             if (Policy::CpuPolicy[i] == -1) continue;
             if (model.SchedParamCount[i] == 0) continue;
-            // 二级回退：AppProfile -> Performances
-            const string_t& gov = !model.Governor[i].empty() ? model.Governor[i]
-                                                              : Performances::CpuGovernor[i];
+            // [跟随系统] governor 留空 → 无目标路径, 跳过 SchedParam(不回退基础)
+            const string_t& gov = model.Governor[i];
             if (gov.empty()) continue;
             for (int j = 0; j < model.SchedParamCount[i]; j++) {
                 if (model.SchedParamName[i][j].empty()) continue;
@@ -785,8 +784,8 @@ public:
         for (int i = 0; i <= 3; i++) {
             int policy = Config::Policy::CpuPolicy[i];
             if (policy < 0) continue;
-            const string_t& gov = !m.Governor[i].empty() ? m.Governor[i]
-                                                         : Config::Performances::CpuGovernor[i];
+            // [跟随系统] governor 留空 → 不护航该簇(跟随系统), 不回退基础模式
+            const string_t& gov = m.Governor[i];
             if (gov.empty()) continue;
 
             char aff[256];
