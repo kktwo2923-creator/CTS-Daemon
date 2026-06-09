@@ -103,7 +103,7 @@
                 "Core4": "1",
                 "Core5": "1",
                 "Core6": "1",
-                "Core7": "0"
+                "Core7": "1"
             },
             "gov_c0": {
                 "governor": "walt"
