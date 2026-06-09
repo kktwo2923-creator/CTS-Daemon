@@ -41,6 +41,7 @@ private:
 
     bool cpuBoost = false;
     std::string lastTopApp;          // 上一次前台应用包名（用于画像切换去重）
+    long long   lastGameCpusetFixMs = 0;  // 游戏档 cpuset 矫正节流: 上次矫正时刻(ms), 防 ping-pong
 
     // [dedup] 缓存上一次写入的 (min,max,gov)，相同则跳过 sysfs 写
     // 避免 None→Touch→None / 重复 applyScene 等抖动场景重复刷盘
@@ -688,6 +689,54 @@ public:
 
 
 
+    // 读 sysfs/cpuset 节点首段并去尾部空白。失败返回 false 且 out 置空串。
+    bool readNodeTrim(const char* p, char* out, size_t cap) {
+        out[0] = '\0';
+        int fd = open(p, O_RDONLY | O_CLOEXEC);
+        if (fd < 0) return false;
+        ssize_t n = read(fd, out, cap - 1);
+        close(fd);
+        if (n <= 0) { out[0] = '\0'; return false; }
+        out[n] = '\0';
+        for (ssize_t i = n - 1; i >= 0 &&
+             (out[i]=='\n'||out[i]=='\r'||out[i]==' '||out[i]=='\t'); --i) out[i] = '\0';
+        return true;
+    }
+
+    // [游戏档 cpuset 矫正] 游戏档下系统(ORMS)常把 top-app cpuset 收窄(踢掉超大核 6-7 → 卡 0-5)。
+    //   事件驱动(top-app inotify, 已排除 IN_ACCESS 避免自诱发)+ 幂等(已是全核就不写)+ 节流
+    //   (两次至少隔 kFixMinMs)→ 系统收窄一次就拉回一次, 不像旧版每 200ms 抢写造成跳动。
+    //   只写 cpuset 的 cpus 节点, 不碰频率/governor(那两者跟随系统)。
+    void correctGameTopAppCpus() {
+        int cur = Config::AppProfile::currentMatch.load();
+        if (cur < 0 || cur >= Config::AppProfile::modelCount
+            || !Config::AppProfile::Models[cur].isGame) return;
+
+        // 目标全核范围: 优先用配置的 top_app(游戏档应为 0-7), 否则用当前全部在线 CPU。
+        char desired[64] = { 0 };
+        if (Config::Cpuset::enable && !Config::Cpuset::top_app.empty())
+            snprintf(desired, sizeof(desired), "%s", Config::Cpuset::top_app.c_str());
+        else if (!readNodeTrim("/sys/devices/system/cpu/online", desired, sizeof(desired)))
+            return;
+        if (!desired[0]) return;
+
+        char now[64] = { 0 };
+        readNodeTrim("/dev/cpuset/top-app/cpus", now, sizeof(now));
+        if (strcmp(now, desired) == 0) return;   // 已是全核 → 幂等不写
+
+        constexpr long long kFixMinMs = 1000;    // 节流: ROM 反复收窄时最多每秒矫正一次, 不 ping-pong
+        long long t = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        if (t - lastGameCpusetFixMs < kFixMinMs) return;
+        lastGameCpusetFixMs = t;
+
+        // cpuset 子集 ⊆ 父集: 先放开父(root), 再写 top-app/foreground。background 不动。
+        utils.FileWrite("/dev/cpuset/cpus", desired);
+        utils.FileWrite("/dev/cpuset/top-app/cpus", desired);
+        utils.FileWrite("/dev/cpuset/foreground/cpus", desired);
+        logger.Info("游戏档: top-app cpuset 被收窄(%s) → 矫正回 %s", now, desired);
+    }
+
     // 取前台并按需切换画像。
     //   fresh=true: 强制取最新前台(事件驱动路径必须用,否则 getTopAppCached 的 TTL
     //   缓存会返回切换前的旧包名 → 误判"未变化"跳过 → 表现为检测延迟很高)。
@@ -776,7 +825,10 @@ public:
         int fd = inotify_init1(IN_CLOEXEC);
         int wd = -1;
         if (fd >= 0) {
-            wd = inotify_add_watch(fd, cpusetEventPath, IN_ALL_EVENTS);
+            // [关键] 排除 IN_ACCESS: 否则矫正前读 top-app/cpus 会触发 IN_ACCESS → 自我诱发
+            //   事件 busy-loop。只关心写入类: cgroup tasks 变动(前台切换)/cpus 被改(收窄)。
+            wd = inotify_add_watch(fd, cpusetEventPath,
+                                   IN_MODIFY | IN_ATTRIB | IN_MOVED_TO | IN_CREATE);
             if (wd < 0) { close(fd); fd = -1; }
         }
         logger.Info(fd >= 0
@@ -798,16 +850,17 @@ public:
                 // inotify 出错 → 退化为纯轮询, 避免线程空转占 CPU
                 utils.sleep_ms(kPollIdleMs);
                 evalForegroundOnce(true);
+                correctGameTopAppCpus();
                 continue;
             }
             if (ev == 0) {
                 // 超时无事件: 轻量复查一次(可用缓存, 覆盖个别 ROM 不触发 cpuset 事件的情况)
                 evalForegroundOnce(false);
+                correctGameTopAppCpus();   // 兜底: 个别 ROM 收窄不触发事件时, 空闲复查时矫正
                 continue;
             }
 
-            // top-app cpuset 变动 = 前台可能切了。不再做任何 cpuset 抢写(交给系统),
-            //   只走下面的尾沿防抖去取包名、按需切画像。
+            // top-app cpuset 变动 = 前台切换, 或 系统收窄了游戏档的 cpuset。
             // 尾沿防抖: 等前台安静下来再做重操作(取包名/切画像), 避免连切时频率写风暴
             int deferred = 0;
             while (deferred < kMaxDeferMs) {
@@ -817,6 +870,8 @@ public:
             }
             // 前台已稳定 → 取最新前台并应用一次(强制取最新, 不用缓存)
             evalForegroundOnce(true);
+            // 游戏档若被系统收窄了 top-app cpuset → 幂等+节流矫正回全核(小窗/ORMS 收窄场景)
+            correctGameTopAppCpus();
         }
     }
 
