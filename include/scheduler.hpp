@@ -845,17 +845,21 @@ public:
             int kept = keptGameModel.load();
 
             if (kept < 0) {
-                // 未保活: 跟随 currentMatch 进入任一游戏档 → 启用守护
+                // 未保活: 当前是游戏档 *且* 游戏确实在前台可见时, 才启用守护。
+                //   [Fix busy-loop] 必须同时判"可见": 否则熄屏 / 游戏退后台但 currentMatch 残留
+                //   游戏档时, 会"启用→检测不可见→退出(continue 不 sleep)→currentMatch 仍游戏档→
+                //   又启用"无限空转(占满 CPU + 日志刷屏 + dumpsys 风暴)。
                 int cur = Config::AppProfile::currentMatch.load();
                 if (cur >= 0 && cur < Config::AppProfile::modelCount
-                    && Config::AppProfile::Models[cur].isGame) {
+                    && Config::AppProfile::Models[cur].isGame
+                    && isGameModelForeground(cur)) {
                     keptGameModel.store(cur);
                     tick = 0;
                     logger.Info("游戏会话保活已启用: %s",
                                 Config::AppProfile::Models[cur].modelName.c_str());
-                } else {
-                    utils.sleep_ms(1000);
+                    continue;
                 }
+                utils.sleep_ms(1000);
                 continue;
             }
 
