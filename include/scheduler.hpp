@@ -442,11 +442,40 @@ public:
         }
     }
 
+    // [conservative] 省电档 conservative(co)调速器的内置初始化。
+    //   参数参考 CTS 模块 A/conservative.sh 与 ColorOS 3.5Pro 省电档配置：
+    //   up_threshold 偏高 + down_threshold 适中 + freq_step=1 →
+    //   升频迟缓、台阶平滑、迟于降频，最大化续航。
+    //   仅在某簇 governor 配成 conservative 时调用；conservative 目录的可调节点
+    //   与 walt(adaptive_*/hispeed_load/up_rate_limit_us 等)完全不同，因此不能走
+    //   通用 ParamSched 路径。写失败(该 SoC 无 conservative 调速器,已回退 walt/sugov_ext)
+    //   由 FileWrite 静默忽略。
+    void applyConservativeTunables(const int Policy) {
+        static constexpr struct { const char* name; const char* value; } kConservative[] = {
+            { "up_threshold",   "93"    },
+            { "down_threshold", "58"    },
+            { "freq_step",      "1"     },
+            { "sampling_rate",  "12500" },
+        };
+        char path[256];
+        for (const auto& p : kConservative) {
+            FastSnprintf(path, sizeof(path), SchedParamPath, Policy, "conservative", p.name);
+            utils.FileWrite(path, p.value);
+            logger.Debug("CPU簇: %d conservative 参数: %s 值: %s", Policy, p.name, p.value);
+        }
+    }
+
     void SchedParam() {
         char path[256];
         for (int i = 0; i <= 3; i++) {
             if (Policy::CpuPolicy[i] == -1) continue;
             if (Performances::CpuGovernor[i].empty()) continue;
+            // [conservative] conservative 簇走内置初始化, 不写 walt 形 ParamSched
+            //   (那些节点在 conservative 目录下不存在, 会整片写失败刷日志)。
+            if (strcmp(Performances::CpuGovernor[i].c_str(), "conservative") == 0) {
+                applyConservativeTunables(Policy::CpuPolicy[i]);
+                continue;
+            }
             for (int j = 1; j <= 16; j++) {
                 if (conf.schedParam[i].Name[j].empty()) continue;
                 FastSnprintf(path, sizeof(path), SchedParamPath, Policy::CpuPolicy[i], Performances::CpuGovernor[i].c_str(), conf.schedParam[i].Name[j].c_str());
