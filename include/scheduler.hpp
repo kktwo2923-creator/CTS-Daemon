@@ -279,8 +279,10 @@ public:
                                                               : Performances::MinFreq[i];
             const string_t& maxF = !model.MaxFreq[i].empty() ? model.MaxFreq[i]
                                                               : Performances::MaxFreq[i];
-            const string_t& gov  = !model.Governor[i].empty() ? model.Governor[i]
-                                                               : Performances::CpuGovernor[i];
+            // [交ROM] governor 不再回退基础档: 画像该簇留空 = 交 ROM 风驰
+            //   (空值 FreqWriter 跳过, 不写 scaling_governor)。频率仍回退基础档。
+            //   否则游戏档(governor 留空)会被按上基础档的调速器(如省电的 conservative)。
+            const string_t& gov = model.Governor[i];
             FreqWriter(Policy::CpuPolicy[i], minF, maxF, gov);
         }
 
@@ -292,14 +294,17 @@ public:
         }
 
         // [风驰/conservative] 画像调速器内置初始化: 即使画像未定义 SchedParam,
-        //   只要该簇有效 governor 是 scx/hmbird(游戏风驰)或 conservative, 也要补写其专属可调参数
-        //   (风驰 target_loads / conservative up_threshold 等), 否则游戏档风驰停在内核默认 target_loads。
-        //   只初始化、不接管: gov 为空(交 ROM 风驰)的簇不写。
+        //   只要该簇 governor 是 scx/hmbird(游戏风驰)或 conservative, 也要补写其专属可调参数
+        //   (风驰 target_loads / conservative up_threshold 等), 否则风驰停在内核默认 target_loads。
+        //   按"画像自己的 governor"判, 不回退基础档:
+        //     - 留空(交 ROM 风驰) → 检测实际 scaling_governor, 是风驰就初始化(只初始化不接管);
+        //     - scx/hmbird → 写 target_loads;  conservative → 写 conservative 参数。
         for (int i = 0; i <= 3; i++) {
             if (Policy::CpuPolicy[i] == -1) continue;
-            const string_t& gov = !model.Governor[i].empty() ? model.Governor[i]
-                                                              : Performances::CpuGovernor[i];
-            if (isFengchiGov(gov))
+            const string_t& gov = model.Governor[i];
+            if (gov.empty())
+                initFengchiByDetect(Policy::CpuPolicy[i]);
+            else if (isFengchiGov(gov))
                 applyFengchiTunables(Policy::CpuPolicy[i], gov);
             else if (strcmp(gov.c_str(), "conservative") == 0)
                 applyConservativeTunables(Policy::CpuPolicy[i]);
@@ -497,6 +502,19 @@ public:
         FastSnprintf(path, sizeof(path), SchedParamPath, Policy, gov.c_str(), "target_loads");
         utils.FileWrite(path, "90");
         logger.Debug("CPU簇: %d 风驰(%s) target_loads: 90", Policy, gov.c_str());
+    }
+
+    // [风驰检测] 某簇 config governor 留空(交 ROM 风驰)时, 读实际 scaling_governor:
+    //   若 ROM/系统当前跑的就是 scx/hmbird(风驰) → 写 target_loads 初始化。
+    //   "只初始化、不接管": 全程不写 scaling_governor, 只在检测到风驰时补其专属参数。
+    //   非风驰(walt/sugov_ext 等) → 什么都不做。
+    void initFengchiByDetect(const int Policy) {
+        char gp[256];
+        FastSnprintf(gp, sizeof(gp), GovernorPath, Policy);
+        char cur[64] = { 0 };
+        readTrimmedNode(gp, cur, sizeof(cur));
+        if (strcmp(cur, "scx") == 0 || strcmp(cur, "hmbird") == 0)
+            applyFengchiTunables(Policy, string_t(cur));
     }
 
     void SchedParam() {
@@ -853,14 +871,16 @@ public:
         for (int i = 0; i <= 3; i++) {
             int policy = Config::Policy::CpuPolicy[i];
             if (policy < 0) continue;
-            const string_t& gov = !m.Governor[i].empty() ? m.Governor[i]
-                                                         : Config::Performances::CpuGovernor[i];
-            if (gov.empty()) continue;
 
             char aff[256];
             FastSnprintf(aff, sizeof(aff),
                          "/sys/devices/system/cpu/cpufreq/policy%d/affected_cpus", policy);
             if (!utils.FileStartsWithDigit(aff)) continue;   // 簇仍离线 → 等它上线再决定
+
+            // [交ROM] 游戏模型该簇 governor 留空 → 不接管(不补写 governor, 不回退基础档),
+            //   只检测实际 scaling_governor: 是风驰(scx/hmbird)就补 target_loads(检测到风驰就初始化)。
+            if (m.Governor[i].empty()) { initFengchiByDetect(policy); continue; }
+            const string_t& gov = m.Governor[i];
 
             char gp[256];
             FastSnprintf(gp, sizeof(gp), GovernorPath, policy);
