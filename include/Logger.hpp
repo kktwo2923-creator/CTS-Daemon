@@ -73,17 +73,33 @@ public:
     }
 
 private:
-    static constexpr long LOG_MAX_SIZE = 1024 * 10; // 10KB auto-clear threshold
+    // [日志改长] 10KB→512KB(约数千行); 超限不再整文件清空, 改为滚动保留后一半,
+    //   避免日志"突然全没了"。裁剪按行对齐, 512KB 才触发一次, 开销可忽略。
+    static constexpr long LOG_MAX_SIZE = 1024 * 512; // 512KB rolling threshold
 
     void WriteFile(const char* content, const int len) noexcept {
-        int fd = open(logpath, O_WRONLY | O_CREAT | O_APPEND, 0666);
+        int fd = open(logpath, O_RDWR | O_CREAT | O_APPEND, 0666);
 
         if (fd >= 0) {
-            // Auto-clear log when exceeds 10KB
             struct stat st;
             if (fstat(fd, &st) == 0 && st.st_size >= LOG_MAX_SIZE) {
-                if (ftruncate(fd, 0) == 0) {
-                    // File truncated, write will start at offset 0
+                const long keep = LOG_MAX_SIZE / 2;
+                char* buf = static_cast<char*>(malloc(keep));
+                if (buf) {
+                    ssize_t n = pread(fd, buf, keep, st.st_size - keep);
+                    if (n > 0) {
+                        // 对齐到下一行行首, 避免裁出半行
+                        long off = 0;
+                        while (off < n && buf[off] != '\n') off++;
+                        if (off < n) off++;
+                        if (ftruncate(fd, 0) == 0)
+                            write(fd, buf + off, n - off);   // O_APPEND: 截断后从头追加
+                    } else {
+                        ftruncate(fd, 0);
+                    }
+                    free(buf);
+                } else {
+                    ftruncate(fd, 0);   // 内存不足兜底: 退回旧行为
                 }
             }
             write(fd, content, len);
