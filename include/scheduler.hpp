@@ -442,18 +442,20 @@ public:
         }
     }
 
-    // [conservative] 省电档 conservative(co)调速器的内置初始化。
-    //   参数参考 CTS 模块 A/conservative.sh 与 ColorOS 3.5Pro 省电档配置：
-    //   up_threshold 偏高 + down_threshold 适中 + freq_step=1 →
-    //   升频迟缓、台阶平滑、迟于降频，最大化续航。
+    // [conservative] 省电档 conservative(co)调速器的内置初始化(偏省电)。
+    //   取值综合 Color调度1385 极致版 与 ColorOS 各版本省电档, 往省电方向收一档:
+    //     up_threshold=95    各版本最高(ColorOS 4.1/4.2): 最不愿升频 → 最省电
+    //     down_threshold=80  极致版 B + ColorOS 3.5Pro:    负载一降就快速回落低频 → 省电
+    //     freq_step=1        所有版本一致:                  台阶最细, 不过冲浪费电、也不突兀
+    //     sampling_rate=12500 极致版 A:                     采样周期适中
     //   仅在某簇 governor 配成 conservative 时调用；conservative 目录的可调节点
     //   与 walt(adaptive_*/hispeed_load/up_rate_limit_us 等)完全不同，因此不能走
     //   通用 ParamSched 路径。写失败(该 SoC 无 conservative 调速器,已回退 walt/sugov_ext)
     //   由 FileWrite 静默忽略。
     void applyConservativeTunables(const int Policy) {
         static constexpr struct { const char* name; const char* value; } kConservative[] = {
-            { "up_threshold",   "93"    },
-            { "down_threshold", "58"    },
+            { "up_threshold",   "95"    },
+            { "down_threshold", "80"    },
             { "freq_step",      "1"     },
             { "sampling_rate",  "12500" },
         };
