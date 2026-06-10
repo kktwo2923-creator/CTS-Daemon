@@ -82,16 +82,16 @@
             "freq_max_c3": "1708800",
             "freq_min_c3": "537600",
             "gov_c0": {
-                "governor": "walt"
+                "governor": "conservative"
             },
             "gov_c1": {
-                "governor": "walt"
+                "governor": "conservative"
             },
             "gov_c2": {
-                "governor": "walt"
+                "governor": "conservative"
             },
             "gov_c3": {
-                "governor": "walt"
+                "governor": "conservative"
             }
         },
         {

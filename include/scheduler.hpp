@@ -291,6 +291,20 @@ public:
             function.gpuFreqControlCustom(gpuMin, gpuMax);
         }
 
+        // [风驰/conservative] 画像调速器内置初始化: 即使画像未定义 SchedParam,
+        //   只要该簇有效 governor 是 scx/hmbird(游戏风驰)或 conservative, 也要补写其专属可调参数
+        //   (风驰 target_loads / conservative up_threshold 等), 否则游戏档风驰停在内核默认 target_loads。
+        //   只初始化、不接管: gov 为空(交 ROM 风驰)的簇不写。
+        for (int i = 0; i <= 3; i++) {
+            if (Policy::CpuPolicy[i] == -1) continue;
+            const string_t& gov = !model.Governor[i].empty() ? model.Governor[i]
+                                                              : Performances::CpuGovernor[i];
+            if (isFengchiGov(gov))
+                applyFengchiTunables(Policy::CpuPolicy[i], gov);
+            else if (strcmp(gov.c_str(), "conservative") == 0)
+                applyConservativeTunables(Policy::CpuPolicy[i]);
+        }
+
         // 调速器自定义参数 SchedParam（仅在画像中定义时覆盖）
         char spPath[256];
         for (int i = 0; i <= 3; i++) {
@@ -442,11 +456,65 @@ public:
         }
     }
 
+    // [conservative] 省电档 conservative(co)调速器的内置初始化(偏省电)。
+    //   取值综合 Color调度1385 极致版 与 ColorOS 各版本省电档, 往省电方向收一档:
+    //     up_threshold=95    各版本最高(ColorOS 4.1/4.2): 最不愿升频 → 最省电
+    //     down_threshold=80  极致版 B + ColorOS 3.5Pro:    负载一降就快速回落低频 → 省电
+    //     freq_step=1        所有版本一致:                  台阶最细, 不过冲浪费电、也不突兀
+    //     sampling_rate=12500 极致版 A:                     采样周期适中
+    //   仅在某簇 governor 配成 conservative 时调用；conservative 目录的可调节点
+    //   与 walt(adaptive_*/hispeed_load/up_rate_limit_us 等)完全不同，因此不能走
+    //   通用 ParamSched 路径。写失败(该 SoC 无 conservative 调速器,已回退 walt/sugov_ext)
+    //   由 FileWrite 静默忽略。
+    void applyConservativeTunables(const int Policy) {
+        static constexpr struct { const char* name; const char* value; } kConservative[] = {
+            { "up_threshold",   "95"    },
+            { "down_threshold", "80"    },
+            { "freq_step",      "1"     },
+            { "sampling_rate",  "12500" },
+        };
+        char path[256];
+        for (const auto& p : kConservative) {
+            FastSnprintf(path, sizeof(path), SchedParamPath, Policy, "conservative", p.name);
+            utils.FileWrite(path, p.value);
+            logger.Debug("CPU簇: %d conservative 参数: %s 值: %s", Policy, p.name, p.value);
+        }
+    }
+
+    // [风驰] scx/hmbird(风驰)调速器是否为目标调速器。
+    static bool isFengchiGov(const string_t& g) {
+        return strcmp(g.c_str(), "scx") == 0 || strcmp(g.c_str(), "hmbird") == 0;
+    }
+
+    // [风驰] 游戏风驰(scx/hmbird)调速器的内置初始化。
+    //   风驰只暴露一个可调节点 target_loads(CTS极致版 scx / ColorOS hmbird 一致),
+    //   walt 形 ParamSched(adaptive_*/hispeed_load 等)在风驰目录下不存在, 不能走通用路径。
+    //   target_loads=90(偏稳, 参考 CTS极致版 balance scx): 数值越低风驰越早拉高频→越流畅越费电。
+    //   只初始化参数、不接管 governor: 仅在某簇 governor 已是 scx/hmbird 时写入;
+    //   留空交 ROM 风驰的簇(gov 为空)不写。写失败(该 SoC 无此调速器,已回退)由 FileWrite 静默忽略。
+    void applyFengchiTunables(const int Policy, const string_t& gov) {
+        char path[256];
+        FastSnprintf(path, sizeof(path), SchedParamPath, Policy, gov.c_str(), "target_loads");
+        utils.FileWrite(path, "90");
+        logger.Debug("CPU簇: %d 风驰(%s) target_loads: 90", Policy, gov.c_str());
+    }
+
     void SchedParam() {
         char path[256];
         for (int i = 0; i <= 3; i++) {
             if (Policy::CpuPolicy[i] == -1) continue;
             if (Performances::CpuGovernor[i].empty()) continue;
+            // [conservative] conservative 簇走内置初始化, 不写 walt 形 ParamSched
+            //   (那些节点在 conservative 目录下不存在, 会整片写失败刷日志)。
+            if (strcmp(Performances::CpuGovernor[i].c_str(), "conservative") == 0) {
+                applyConservativeTunables(Policy::CpuPolicy[i]);
+                continue;
+            }
+            // [风驰] scx/hmbird 簇走内置初始化(target_loads), 同样不写 walt 形 ParamSched。
+            if (isFengchiGov(Performances::CpuGovernor[i])) {
+                applyFengchiTunables(Policy::CpuPolicy[i], Performances::CpuGovernor[i]);
+                continue;
+            }
             for (int j = 1; j <= 16; j++) {
                 if (conf.schedParam[i].Name[j].empty()) continue;
                 FastSnprintf(path, sizeof(path), SchedParamPath, Policy::CpuPolicy[i], Performances::CpuGovernor[i].c_str(), conf.schedParam[i].Name[j].c_str());
@@ -801,15 +869,26 @@ public:
 
             if (!lastGovWritten[i].empty()) {
                 // 本会话已决定该簇 governor。若决定值就是配置目标且被 ORMS 改走 → 写回(防抢)。
-                if (lastGovWritten[i] == gov.c_str() && strcmp(cur, gov.c_str()) != 0)
+                if (lastGovWritten[i] == gov.c_str() && strcmp(cur, gov.c_str()) != 0) {
                     utils.FileWriteBlocking(gp, gov);
+                    // [风驰] 切换 governor 后内核会重置其可调节点 → 补写 target_loads。
+                    if (isFengchiGov(gov)) applyFengchiTunables(policy, gov);
+                }
                 continue;
             }
             // 首次决定(该簇刚上线)
-            if (strcmp(cur, gov.c_str()) == 0) { lastGovWritten[i] = gov.c_str(); continue; }
+            if (strcmp(cur, gov.c_str()) == 0) {
+                lastGovWritten[i] = gov.c_str();
+                // [风驰] 超大核刚上线: governor 已对, 但 SchedParam 早先(核离线时)被跳过 →
+                //   target_loads 仍是内核默认, 这里补写一次。
+                if (isFengchiGov(gov)) applyFengchiTunables(policy, gov);
+                continue;
+            }
             if (utils.FileWriteBlocking(gp, gov)) {
                 logger.Info("游戏护航: policy%d 调速器补写 %s (原 %s)", policy, gov.c_str(), cur);
                 lastGovWritten[i] = gov.c_str();
+                // [风驰] 补写 governor 后初始化其 target_loads。
+                if (isFengchiGov(gov)) applyFengchiTunables(policy, gov);
             } else {
                 string_t fb = function.checkQcom() ? "walt" : "sugov_ext";
                 if (fb != gov) utils.FileWriteBlocking(gp, fb);
@@ -921,11 +1000,21 @@ public:
         {
             int curMatch = Config::AppProfile::currentMatch.load();
             if (curMatch >= 0 && curMatch < Config::AppProfile::modelCount
-                && Config::AppProfile::Models[curMatch].isGame && !lastTopApp.empty()) {
+                && Config::AppProfile::Models[curMatch].isGame) {
                 int nm = Config::AppProfile::findMatchingModel(pkg.c_str());
                 bool newIsGame = (nm >= 0 && Config::AppProfile::Models[nm].isGame);
-                if (!newIsGame &&
-                    (utils.isPackageInTopApp(lastTopApp.c_str()) || utils.isPackageVisible(lastTopApp.c_str()))) {
+                // [Fix 小窗误切] 主信号改为"当前游戏模型(按其包名规则)是否仍有可见 Task":
+                //   开小窗时游戏仍在后台渲染 → 其 Task 仍 visible=true → 命中。比只探单个
+                //   lastTopApp 更稳: 不依赖 lastTopApp 是否恰为游戏/是否被清空, 且支持通配/多包名。
+                //   与游戏保活循环(isGameModelForeground)同一判据, 从源头消除"切到小窗 App 又被
+                //   保活拉回游戏"的~1s 掉档(正是"开小窗识别成小窗 App"的现象)。复用同一份前台
+                //   快照(getForegroundCached), 不增加 dumpsys 开销。
+                bool gameStillForeground =
+                        isGameModelForeground(curMatch)
+                        || (!lastTopApp.empty() &&
+                            (utils.isPackageInTopApp(lastTopApp.c_str())
+                             || utils.isPackageVisible(lastTopApp.c_str())));
+                if (!newIsGame && gameStillForeground) {
                     // [Fix 小窗收窄cpuset] 仅保持画像还不够: 部分 ROM(ColorOS/OplusOS)在小窗/浮窗
                     //   (freeform)获焦瞬间会"只改 cpuset 不下线核心"地把 top-app cpuset 收窄,
                     //   把超大核 6-7 踢出 → top-app 卡 0-5。原先这里只 return 不重写 cpuset,
