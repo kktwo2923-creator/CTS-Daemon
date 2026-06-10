@@ -919,6 +919,42 @@ public:
         }
     }
 
+    // [Fix 超大核掉walt/不同步] 非游戏档的 governor 护航 — 与游戏档 enforceGameGovernors 对称。
+    //   根因: 切 App 时若某簇(常见超大核)正被 core_ctl 离线/晚于 waitClusterReady 上线,
+    //   FreqWriter 那一刻 affected_cpus 为空被跳过 → 该簇停在内核默认 walt, 其它簇已是 config
+    //   的 conservative → 表现为"超大核 walt、小核 co 不同步"。本函数巡检每个"已上线"簇的实际
+    //   governor, 与当前生效配置(画像优先, 否则基础 mode)不符就补写并初始化其可调参数。
+    //   幂等: 稳定时只读不写; 空 governor(游戏档交 ROM)只检测风驰、不接管。
+    void enforceBaseGovernors() {
+        int match = Config::AppProfile::currentMatch.load();
+        bool hasProfile = (match >= 0 && match < Config::AppProfile::modelCount);
+        for (int i = 0; i <= 3; i++) {
+            int policy = Config::Policy::CpuPolicy[i];
+            if (policy < 0) continue;
+            // 当前生效 governor: 有画像匹配用画像自身的, 否则用基础 mode 的(均不回退)
+            const string_t& gov = hasProfile ? Config::AppProfile::Models[match].Governor[i]
+                                             : Config::Performances::CpuGovernor[i];
+            char aff[256];
+            FastSnprintf(aff, sizeof(aff),
+                         "/sys/devices/system/cpu/cpufreq/policy%d/affected_cpus", policy);
+            if (!utils.FileStartsWithDigit(aff)) continue;   // 簇离线 → 跳过, 上线后下一轮再补
+            if (gov.empty()) { initFengchiByDetect(policy); continue; }   // 交 ROM: 只检测风驰
+
+            char gp[256];
+            FastSnprintf(gp, sizeof(gp), GovernorPath, policy);
+            char cur[64] = { 0 };
+            readTrimmedNode(gp, cur, sizeof(cur));
+            if (strcmp(cur, gov.c_str()) == 0) continue;     // 已同步 → 不写(幂等)
+            if (utils.FileWriteBlocking(gp, gov)) {
+                logger.Info("governor 护航: policy%d %s→%s(晚上线/被改, 已补同步)", policy, cur, gov.c_str());
+                if (isFengchiGov(gov)) applyFengchiTunables(policy, gov);
+                else if (strcmp(gov.c_str(), "conservative") == 0) applyConservativeTunables(policy);
+            } else {
+                logger.Debug("governor 护航: policy%d 写 %s 失败(节点不可写/不支持)", policy, gov.c_str());
+            }
+        }
+    }
+
     // 指定(游戏)模型的包名是否仍"在前台/可见"。判据: 前台快照里任一可见 Task 的包名
     //   findMatchingModel 仍命中该模型 → 还在游戏(支持通配符包名)。dumpsys 失败(快照无效)→
     //   保守返回 true(不因一次取值失败就误判游戏退出、放弃保活)。
@@ -953,6 +989,13 @@ public:
                     logger.Info("游戏会话保活已启用: %s",
                                 Config::AppProfile::Models[cur].modelName.c_str());
                 } else {
+                    // [Fix 超大核掉walt] 非游戏档也护航 governor: 巡检已上线簇, 把晚上线/被改
+                    //   而没同步到 config 的 governor(超大核常见)补回。便宜(只读, 不符才写),
+                    //   复用本分支原有的 1s 唤醒, 几乎零额外开销。
+                    {
+                        std::lock_guard<std::recursive_mutex> lk(applyMtx);
+                        enforceBaseGovernors();
+                    }
                     utils.sleep_ms(1000);
                 }
                 continue;
