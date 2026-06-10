@@ -291,6 +291,20 @@ public:
             function.gpuFreqControlCustom(gpuMin, gpuMax);
         }
 
+        // [风驰/conservative] 画像调速器内置初始化: 即使画像未定义 SchedParam,
+        //   只要该簇有效 governor 是 scx/hmbird(游戏风驰)或 conservative, 也要补写其专属可调参数
+        //   (风驰 target_loads / conservative up_threshold 等), 否则游戏档风驰停在内核默认 target_loads。
+        //   只初始化、不接管: gov 为空(交 ROM 风驰)的簇不写。
+        for (int i = 0; i <= 3; i++) {
+            if (Policy::CpuPolicy[i] == -1) continue;
+            const string_t& gov = !model.Governor[i].empty() ? model.Governor[i]
+                                                              : Performances::CpuGovernor[i];
+            if (isFengchiGov(gov))
+                applyFengchiTunables(Policy::CpuPolicy[i], gov);
+            else if (strcmp(gov.c_str(), "conservative") == 0)
+                applyConservativeTunables(Policy::CpuPolicy[i]);
+        }
+
         // 调速器自定义参数 SchedParam（仅在画像中定义时覆盖）
         char spPath[256];
         for (int i = 0; i <= 3; i++) {
@@ -467,6 +481,24 @@ public:
         }
     }
 
+    // [风驰] scx/hmbird(风驰)调速器是否为目标调速器。
+    static bool isFengchiGov(const string_t& g) {
+        return strcmp(g.c_str(), "scx") == 0 || strcmp(g.c_str(), "hmbird") == 0;
+    }
+
+    // [风驰] 游戏风驰(scx/hmbird)调速器的内置初始化。
+    //   风驰只暴露一个可调节点 target_loads(CTS极致版 scx / ColorOS hmbird 一致),
+    //   walt 形 ParamSched(adaptive_*/hispeed_load 等)在风驰目录下不存在, 不能走通用路径。
+    //   target_loads=90(偏稳, 参考 CTS极致版 balance scx): 数值越低风驰越早拉高频→越流畅越费电。
+    //   只初始化参数、不接管 governor: 仅在某簇 governor 已是 scx/hmbird 时写入;
+    //   留空交 ROM 风驰的簇(gov 为空)不写。写失败(该 SoC 无此调速器,已回退)由 FileWrite 静默忽略。
+    void applyFengchiTunables(const int Policy, const string_t& gov) {
+        char path[256];
+        FastSnprintf(path, sizeof(path), SchedParamPath, Policy, gov.c_str(), "target_loads");
+        utils.FileWrite(path, "90");
+        logger.Debug("CPU簇: %d 风驰(%s) target_loads: 90", Policy, gov.c_str());
+    }
+
     void SchedParam() {
         char path[256];
         for (int i = 0; i <= 3; i++) {
@@ -476,6 +508,11 @@ public:
             //   (那些节点在 conservative 目录下不存在, 会整片写失败刷日志)。
             if (strcmp(Performances::CpuGovernor[i].c_str(), "conservative") == 0) {
                 applyConservativeTunables(Policy::CpuPolicy[i]);
+                continue;
+            }
+            // [风驰] scx/hmbird 簇走内置初始化(target_loads), 同样不写 walt 形 ParamSched。
+            if (isFengchiGov(Performances::CpuGovernor[i])) {
+                applyFengchiTunables(Policy::CpuPolicy[i], Performances::CpuGovernor[i]);
                 continue;
             }
             for (int j = 1; j <= 16; j++) {
@@ -832,15 +869,26 @@ public:
 
             if (!lastGovWritten[i].empty()) {
                 // 本会话已决定该簇 governor。若决定值就是配置目标且被 ORMS 改走 → 写回(防抢)。
-                if (lastGovWritten[i] == gov.c_str() && strcmp(cur, gov.c_str()) != 0)
+                if (lastGovWritten[i] == gov.c_str() && strcmp(cur, gov.c_str()) != 0) {
                     utils.FileWriteBlocking(gp, gov);
+                    // [风驰] 切换 governor 后内核会重置其可调节点 → 补写 target_loads。
+                    if (isFengchiGov(gov)) applyFengchiTunables(policy, gov);
+                }
                 continue;
             }
             // 首次决定(该簇刚上线)
-            if (strcmp(cur, gov.c_str()) == 0) { lastGovWritten[i] = gov.c_str(); continue; }
+            if (strcmp(cur, gov.c_str()) == 0) {
+                lastGovWritten[i] = gov.c_str();
+                // [风驰] 超大核刚上线: governor 已对, 但 SchedParam 早先(核离线时)被跳过 →
+                //   target_loads 仍是内核默认, 这里补写一次。
+                if (isFengchiGov(gov)) applyFengchiTunables(policy, gov);
+                continue;
+            }
             if (utils.FileWriteBlocking(gp, gov)) {
                 logger.Info("游戏护航: policy%d 调速器补写 %s (原 %s)", policy, gov.c_str(), cur);
                 lastGovWritten[i] = gov.c_str();
+                // [风驰] 补写 governor 后初始化其 target_loads。
+                if (isFengchiGov(gov)) applyFengchiTunables(policy, gov);
             } else {
                 string_t fb = function.checkQcom() ? "walt" : "sugov_ext";
                 if (fb != gov) utils.FileWriteBlocking(gp, fb);
