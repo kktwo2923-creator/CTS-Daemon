@@ -1000,11 +1000,21 @@ public:
         {
             int curMatch = Config::AppProfile::currentMatch.load();
             if (curMatch >= 0 && curMatch < Config::AppProfile::modelCount
-                && Config::AppProfile::Models[curMatch].isGame && !lastTopApp.empty()) {
+                && Config::AppProfile::Models[curMatch].isGame) {
                 int nm = Config::AppProfile::findMatchingModel(pkg.c_str());
                 bool newIsGame = (nm >= 0 && Config::AppProfile::Models[nm].isGame);
-                if (!newIsGame &&
-                    (utils.isPackageInTopApp(lastTopApp.c_str()) || utils.isPackageVisible(lastTopApp.c_str()))) {
+                // [Fix 小窗误切] 主信号改为"当前游戏模型(按其包名规则)是否仍有可见 Task":
+                //   开小窗时游戏仍在后台渲染 → 其 Task 仍 visible=true → 命中。比只探单个
+                //   lastTopApp 更稳: 不依赖 lastTopApp 是否恰为游戏/是否被清空, 且支持通配/多包名。
+                //   与游戏保活循环(isGameModelForeground)同一判据, 从源头消除"切到小窗 App 又被
+                //   保活拉回游戏"的~1s 掉档(正是"开小窗识别成小窗 App"的现象)。复用同一份前台
+                //   快照(getForegroundCached), 不增加 dumpsys 开销。
+                bool gameStillForeground =
+                        isGameModelForeground(curMatch)
+                        || (!lastTopApp.empty() &&
+                            (utils.isPackageInTopApp(lastTopApp.c_str())
+                             || utils.isPackageVisible(lastTopApp.c_str())));
+                if (!newIsGame && gameStillForeground) {
                     // [Fix 小窗收窄cpuset] 仅保持画像还不够: 部分 ROM(ColorOS/OplusOS)在小窗/浮窗
                     //   (freeform)获焦瞬间会"只改 cpuset 不下线核心"地把 top-app cpuset 收窄,
                     //   把超大核 6-7 踢出 → top-app 卡 0-5。原先这里只 return 不重写 cpuset,
