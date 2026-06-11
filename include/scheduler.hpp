@@ -860,8 +860,7 @@ public:
     //   纯 cpuset 文件读写、幂等(未被收窄不写), 极轻量。
     void maybeEnforceGameCpus() {
         int cur = Config::AppProfile::currentMatch.load();
-        if (cur >= 0 && cur < Config::AppProfile::modelCount
-            && Config::AppProfile::Models[cur].isGame)
+        if (keepAliveEligible(cur))
             enforceTopAppFullCpus();
     }
 
@@ -987,6 +986,14 @@ public:
     // 指定(游戏)模型的包名是否仍"在前台/可见"。判据: 前台快照里任一可见 Task 的包名
     //   findMatchingModel 仍命中该模型 → 还在游戏(支持通配符包名)。dumpsys 失败(快照无效)→
     //   保守返回 true(不因一次取值失败就误判游戏退出、放弃保活)。
+    // [keep_alive] 该画像是否享有"前台保活"资格: 游戏档(isGame)或显式 keep_alive=true
+    //   的画像(如风驰 fast)。保活/小窗保护统一用它判定, 不再只认 isGame。
+    static bool keepAliveEligible(int idx) {
+        if (idx < 0 || idx >= Config::AppProfile::modelCount) return false;
+        const auto& m = Config::AppProfile::Models[idx];
+        return m.isGame || m.keepAlive;
+    }
+
     bool isGameModelForeground(int idx) {
         auto snap = utils.getForegroundCached(800);
         if (!snap.valid) return true;
@@ -1009,10 +1016,9 @@ public:
             int kept = keptGameModel.load();
 
             if (kept < 0) {
-                // 未保活: 跟随 currentMatch 进入任一游戏档 → 启用守护
+                // 未保活: 跟随 currentMatch 进入任一保活资格画像(游戏档或 keep_alive)→ 启用守护
                 int cur = Config::AppProfile::currentMatch.load();
-                if (cur >= 0 && cur < Config::AppProfile::modelCount
-                    && Config::AppProfile::Models[cur].isGame) {
+                if (keepAliveEligible(cur)) {
                     keptGameModel.store(cur);
                     tick = 0;
                     logger.Info("游戏会话保活已启用: %s",
@@ -1091,10 +1097,11 @@ public:
         //     此分支只在"游戏档 + 新获焦非游戏"时触发(正是开小窗那一刻)才付一次 dumpsys, 不影响常态。
         {
             int curMatch = Config::AppProfile::currentMatch.load();
-            if (curMatch >= 0 && curMatch < Config::AppProfile::modelCount
-                && Config::AppProfile::Models[curMatch].isGame) {
+            if (keepAliveEligible(curMatch)) {
                 int nm = Config::AppProfile::findMatchingModel(pkg.c_str());
-                bool newIsGame = (nm >= 0 && Config::AppProfile::Models[nm].isGame);
+                // 新获焦若也是保活资格画像(真切到另一游戏/风驰 App)→ 允许切换; 否则(小窗/弹窗/
+                //   桌面等)视为覆盖物, 维持当前画像不掉档。
+                bool newIsGame = keepAliveEligible(nm);
                 // [Fix 小窗误切] 主信号改为"当前游戏模型(按其包名规则)是否仍有可见 Task":
                 //   开小窗时游戏仍在后台渲染 → 其 Task 仍 visible=true → 命中。比只探单个
                 //   lastTopApp 更稳: 不依赖 lastTopApp 是否恰为游戏/是否被清空, 且支持通配/多包名。

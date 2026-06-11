@@ -147,6 +147,7 @@ public:
         readStr (node, "model_name", out.modelName);
         readStr (node, "mode",       out.modeName);
         readBool(node, "is_game",    out.isGame);
+        readBool(node, "keep_alive", out.keepAlive);   // [keep_alive] 非游戏画像也可享保活
 
         // packages
         try {
@@ -330,7 +331,7 @@ public:
             AppProfile::packageBlacklist[i] = "";
         for (int i = 0; i < AppProfile::MAX_MODELS; i++) {
             auto& m = AppProfile::Models[i];
-            m.modelName = ""; m.modeName = ""; m.isGame = false; m.packageCount = 0;
+            m.modelName = ""; m.modeName = ""; m.isGame = false; m.keepAlive = false; m.packageCount = 0;
             for (int j = 0; j < 32; j++) m.packages[j] = "";
             for (int j = 0; j <= 3; j++) {
                 m.MinFreq[j] = ""; m.MaxFreq[j] = ""; m.Governor[j] = "";
