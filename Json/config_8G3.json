@@ -177,6 +177,7 @@
             "model_name": "fast",
             "mode": "fast",
             "is_game": false,
+            "keep_alive": true,
             "packages": [],
             "freq_min_c0": "1200000",
             "freq_max_c0": "3628800",

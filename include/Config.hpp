@@ -150,6 +150,9 @@ namespace Config {
         string_t modelName;
         string_t modeName;      // 情景模式名：powersave/balance/performance/fast（用于匹配 mode.txt）
         bool     isGame = false;
+        // [keep_alive] 保活资格: 该画像在前台期间被锁定不掉档(小窗/弹窗/焦点切换都不撤),
+        //   原本仅 isGame 享有; 置 true 可让非游戏画像(如风驰 fast)也享同等保活。
+        bool     keepAlive = false;
         string_t packages[32];
         int      packageCount = 0;
 
