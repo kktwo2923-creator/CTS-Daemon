@@ -53,7 +53,10 @@
         "com.google.android.inputmethod.*",
         "android",
         "PopupWindow",
-        "NotificationShade"
+        "NotificationShade",
+        "com.ktwo.cts",
+        "com.omarea.vtools*",
+        "com.omarea.gesture*"
     ],
     "models": [
         {

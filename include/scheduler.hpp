@@ -45,6 +45,11 @@ private:
     std::atomic<bool> keeperShouldExit{false};  // cpuset 守护循环退出标志
     std::atomic<int>  keptGameModel{-1};        // 游戏会话保活: 当前锁定的游戏模型索引(-1=未保活)
     std::string       lastGovWritten[4];        // 游戏护航: 每簇本会话已决定的 governor(空=未决定/簇还离线)
+    // [Fix 卡死旧调速器] 非游戏护航: 每簇已确认"写不进"的配置 governor(空=未失败)。
+    //   命中则本轮不再重试失败写、改以 SoC 默认调速器为守护目标 → 防每秒重试+Warn 刷屏。
+    //   仅 cpusetKeeperTask 单线程读写(enforceBaseGovernors 唯一调用方), 无需加锁。
+    std::string       baseGovFailed[4];
+    int               baseGovFailedMatch = -2;  // 记录失败时的画像索引: 画像切换即清空重试(自愈)
 
     // [dedup] 缓存上一次写入的 (min,max,gov)，相同则跳过 sysfs 写
     // 避免 None→Touch→None / 重复 applyScene 等抖动场景重复刷盘
@@ -928,6 +933,12 @@ public:
     void enforceBaseGovernors() {
         int match = Config::AppProfile::currentMatch.load();
         bool hasProfile = (match >= 0 && match < Config::AppProfile::modelCount);
+        // [Fix 卡死旧调速器] 画像切换 → 清空"写失败"记录, 给新画像的 governor 重试机会
+        //   (也覆盖 ROM 后来才暴露 hmbird 的场景: 下次切档自愈)。
+        if (match != baseGovFailedMatch) {
+            for (int i = 0; i <= 3; i++) baseGovFailed[i].clear();
+            baseGovFailedMatch = match;
+        }
         for (int i = 0; i <= 3; i++) {
             int policy = Config::Policy::CpuPolicy[i];
             if (policy < 0) continue;
@@ -944,13 +955,31 @@ public:
             FastSnprintf(gp, sizeof(gp), GovernorPath, policy);
             char cur[64] = { 0 };
             readTrimmedNode(gp, cur, sizeof(cur));
-            if (strcmp(cur, gov.c_str()) == 0) continue;     // 已同步 → 不写(幂等)
+            if (strcmp(cur, gov.c_str()) == 0) {             // 已同步 → 不写(幂等)
+                baseGovFailed[i].clear();                    // 配置 governor 实际可用 → 解除回退
+                continue;
+            }
+            // [Fix 卡死旧调速器] 该簇配置 governor 本会话已确认写不进 → 不再每秒重试失败写,
+            //   改以 SoC 默认调速器为守护目标(被 ROM 改走才补写, 幂等), 防 Warn 刷屏。
+            if (!baseGovFailed[i].empty() && baseGovFailed[i] == gov.c_str()) {
+                string_t fb = function.checkQcom() ? "walt" : "sugov_ext";
+                if (strcmp(cur, fb.c_str()) != 0) utils.FileWriteBlocking(gp, fb);
+                continue;
+            }
             if (utils.FileWriteBlocking(gp, gov)) {
                 logger.Info("governor 护航: policy%d %s→%s(晚上线/被改, 已补同步)", policy, cur, gov.c_str());
                 if (isFengchiGov(gov)) applyFengchiTunables(policy, gov);
                 else if (strcmp(gov.c_str(), "conservative") == 0) applyConservativeTunables(policy);
+                baseGovFailed[i].clear();
             } else {
-                logger.Debug("governor 护航: policy%d 写 %s 失败(节点不可写/不支持)", policy, gov.c_str());
+                // [Fix 卡死旧调速器] 与 enforceGameGovernors 对称: 写失败(该 SoC/当前状态不支持
+                //   此 governor, 如 ROM 未暴露 hmbird)→ 回退 SoC 默认并 Warn 一次。否则该簇
+                //   永远停在上一画像遗留的旧 governor(如小窗误切后的 conservative)→ 混合滞留态。
+                string_t fb = function.checkQcom() ? "walt" : "sugov_ext";
+                if (fb != gov) utils.FileWriteBlocking(gp, fb);
+                logger.Warn("governor 护航: policy%d 不支持 %s, 已回退 %s(该簇请在 config 改用受支持的调速器)",
+                            policy, gov.c_str(), fb.c_str());
+                baseGovFailed[i] = gov.c_str();              // 记失败值: 本画像期内不再重试/刷屏
             }
         }
     }
