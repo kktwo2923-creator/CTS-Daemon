@@ -513,6 +513,12 @@ public:
     //   若 ROM/系统当前跑的就是 scx/hmbird(风驰) → 写 target_loads 初始化。
     //   "只初始化、不接管": 全程不写 scaling_governor, 只在检测到风驰时补其专属参数。
     //   非风驰(walt/sugov_ext 等) → 什么都不做。
+    //   [交ROM 污染不可清] 若该簇曾被低档画像(基础 powersave 等)误写过 conservative/walt,
+    //   这里检测到非风驰也"无从恢复": 留空 = 不知道 ROM 想要什么 governor(风驰开关/温控/
+    //   场景都会让 ROM 自行选择), 盲写 scx/hmbird 反而会与 ROM 打架或写失败回退 walt。
+    //   因此唯一正确解是从源头杜绝低档 governor 进入游戏簇(见 reapplyAfterReload /
+    //   evalForegroundOnce 小窗保护); 若用户要求守护进程兜底, 应在 config 给游戏档
+    //   显式配置 scx/hmbird, 由 enforceGameGovernors 接管写回。
     void initFengchiByDetect(const int Policy) {
         char gp[256];
         FastSnprintf(gp, sizeof(gp), GovernorPath, Policy);
@@ -557,6 +563,60 @@ public:
         SchedParam();
         online();
         function.gpuFreqControl();
+    }
+
+    // 取模型名(越界/未匹配返回空)。供热重载前快照用: readConfig→resetState 会整体重建
+    //   模型数组, 旧索引随即失效, 跨重载只能靠模型名重定位。
+    std::string modelNameOf(int idx) {
+        if (idx >= 0 && idx < Config::AppProfile::modelCount)
+            return std::string(Config::AppProfile::Models[idx].modelName.c_str());
+        return std::string();
+    }
+
+    // [Fix 热重载掉档] config.json / mode.txt 热重载后的统一再应用入口。
+    //   根因: readConfig→resetState 把 AppProfile::currentMatch 清成 -1(JsonConfig::resetState),
+    //   旧路径紧接着盲调 applyAllConfig() → release() → applyWithProfile() 看到 -1 →
+    //   把"基础模式"(如 powersave: conservative + 关 6-7 核)整套砸进正在前台的游戏;
+    //   游戏档 governor 留空(交 ROM 风驰)时, 之后保活拉回 game_heavy 也不会再写 governor
+    //   (FreqWriter 空值跳过, enforceGameGovernors 空值只检测风驰不接管) → conservative
+    //   永久滞留在游戏簇("c0=hmbird / c1=conservative 混合态"的根因)。
+    //   同时 currentMatch 被清成 -1 还会让 evalForegroundOnce 的小窗保护失效
+    //   (keepAliveEligible(-1)=false), 紧随重载的小窗获焦(如 com.ktwo.cts)会被误切画像。
+    //   正确行为: 重载后先按"模型名"把保活会话/当前画像重定位到新模型数组(索引可能因
+    //   配置增删而变化), 再强制重算当前前台; 只有前台确实无画像匹配时才落基础模式。
+    void reapplyAfterReload(const std::string& keptName, const std::string& curName) {
+        std::lock_guard<std::recursive_mutex> lk(applyMtx);
+        if (!Config::AppProfile::enable) {   // 画像功能未启用 → 维持旧行为, 直接应用基础模式
+            applyAllConfig();
+            return;
+        }
+        // 1) 按模型名重定位: 保活会话跨重载延续; currentMatch 先恢复, 让下面
+        //    evalForegroundOnce 的小窗保护/去重在重载后依然成立, 不出现 -1 空窗期。
+        int keptIdx = keptName.empty() ? -1
+                    : Config::AppProfile::findModelByName(keptName.c_str());
+        int curIdx  = curName.empty()  ? -1
+                    : Config::AppProfile::findModelByName(curName.c_str());
+        keptGameModel.store(keptIdx);
+        if (keptIdx >= 0) {
+            Config::AppProfile::currentMatch.store(keptIdx);
+            for (int i = 0; i <= 3; i++) lastGovWritten[i].clear();   // 新配置重新决定护航 governor
+        } else if (curIdx >= 0) {
+            Config::AppProfile::currentMatch.store(curIdx);
+        }
+        // 2) 配置内容已变 → 清 FreqWriter 去重缓存, 保证新数值必写、不被 dedup 误跳过
+        invalidateFreqCache();
+        // 3) 强制按当前前台重算画像(清 lastTopApp 绕过 pkg 去重): 前台仍是游戏/keep_alive
+        //    → 保持其画像; 前台真换了别的 App → 正常切到新画像; 前台是黑名单/小窗覆盖物
+        //    → 保持第 1 步恢复的画像不动。
+        lastTopApp.clear();
+        evalForegroundOnce(true);
+        // 4) 落盘: 有画像匹配 → 重应用该画像(evalForegroundOnce 在"画像未变"时会跳过应用,
+        //    但配置数值可能已变, 这里必须强制重写一次); 无匹配 → 应用基础模式(等价旧
+        //    applyAllConfig 行为)。
+        if (Config::AppProfile::currentMatch.load() >= 0)
+            applyWithProfile(scene_.current());
+        else
+            applyAllConfig();
     }
 
     // [Fix] 删除了 FileState / getFileState / fileStateChanged / reloadRuntimeConfig 等
@@ -629,8 +689,14 @@ public:
                 logger.Debug("mode.txt 内容未变,跳过重载");
                 continue;
             }
+            // [Fix 热重载掉档] readConfig→resetState 会清空模型数组与 currentMatch,
+            //   先记下保活/当前画像的模型名, 重载后按名字重定位(索引可能变化)。
+            std::string keptName = modelNameOf(keptGameModel.load());
+            std::string curName  = modelNameOf(Config::AppProfile::currentMatch.load());
             if (conf.readConfig()) {
-                applyAllConfig();
+                // 不再盲调 applyAllConfig 应用基础模式: 游戏进行中切 mode.txt 不应把
+                // 基础档(如 powersave/conservative)砸进游戏簇, 由统一入口重算前台画像。
+                reapplyAfterReload(keptName, curName);
                 lastHash = h;
             } else {
                 logger.Warn("配置重载失败，跳过应用");
@@ -657,10 +723,17 @@ public:
                 logger.Debug("config.json 内容未变,跳过重载");
                 continue;
             }
+            // [Fix 热重载掉档] readConfig→resetState 会清空模型数组与 currentMatch,
+            //   先记下保活/当前画像的模型名, 重载后按名字重定位(索引可能变化)。
+            std::string keptName = modelNameOf(keptGameModel.load());
+            std::string curName  = modelNameOf(Config::AppProfile::currentMatch.load());
             if (conf.readConfig()) {
                 // [Fix] readConfig 内部已 setLogLevel，无需重复
                 function.ReloadFunC();   // [Fix] 用 ReloadFunC 而非 AllFunC（不重启守护线程）
-                applyAllConfig();
+                // [Fix 热重载掉档] 不再盲调 applyAllConfig 应用基础模式: 游戏(交ROM 空 governor)
+                //   进行中热重载 config 会把 powersave 的 conservative 写进游戏簇且无人清除。
+                //   改为重定位保活会话 + 重算当前前台画像, 仅前台无画像时才落基础模式。
+                reapplyAfterReload(keptName, curName);
                 lastHash = h;
             } else {
                 logger.Warn("JSON 配置重载失败，跳过应用");
