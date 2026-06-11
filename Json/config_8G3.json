@@ -117,7 +117,7 @@
                 "Core4": "1",
                 "Core5": "1",
                 "Core6": "1",
-                "Core7": "0"
+                "Core7": "1"
             },
             "freq_max_c2": "2035200",
             "freq_min_c2": "537600",
@@ -201,16 +201,16 @@
             "freq_max_c3": "5000000",
             "freq_min_c3": "1200000",
             "gov_c0": {
-                "governor": "hmbird"
+                "governor": ""
             },
             "gov_c1": {
-                "governor": "hmbird"
+                "governor": ""
             },
             "gov_c2": {
-                "governor": "hmbird"
+                "governor": ""
             },
             "gov_c3": {
-                "governor": "hmbird"
+                "governor": ""
             }
         },
         {
