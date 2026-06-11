@@ -2,7 +2,7 @@
 
 # CoreTurboScheduler · CTS
 
-**CPU 调度守护进程**
+**骁龙 8 至尊版(8 Elite Gen 5 / SM8850)6+2 架构专用 CPU 调度守护进程**
 
 省电优先 · 应用画像 · governor 自主调频
 
