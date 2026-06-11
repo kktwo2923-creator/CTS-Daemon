@@ -56,7 +56,8 @@
         "NotificationShade",
         "com.ktwo.cts",
         "com.omarea.vtools*",
-        "com.omarea.gesture*"
+        "com.omarea.gesture*",
+        "bin.mt.plus*"
     ],
     "models": [
         {
