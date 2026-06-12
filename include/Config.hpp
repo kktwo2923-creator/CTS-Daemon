@@ -62,6 +62,10 @@ namespace Config {
         bool     enable   = true;
         string_t min_freq;
         string_t max_freq;
+        // 原子快照：配置加载完成时发布，gpuFreqGuard 每秒读它而非上面的 string（消除跨线程竞争）
+        std::atomic<int> min_mhz{0};
+        std::atomic<int> max_mhz{0};
+        std::atomic<int> enabled{1};
     }
 
     namespace Performances {

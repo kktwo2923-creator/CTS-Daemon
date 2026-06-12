@@ -1,10 +1,13 @@
 #pragma once
 
+// eventfd.h 用到 uint64_t，须在 JsonConfig 的 using namespace qlib 生效前包含，避免歧义
+#include <sys/eventfd.h>
 #include "LibUtils.hpp"
 #include "Function.hpp"
 #include "SceneDetector.hpp"
 #include <sys/inotify.h>
 #include <sys/resource.h>
+#include <poll.h>
 #include <sched.h>
 #include <linux/limits.h>
 #include <sys/stat.h>
@@ -14,6 +17,7 @@
 #include <cstring>
 #include <atomic>
 #include <mutex>
+#include <condition_variable>
 
 class Schedule {
 private:
@@ -30,6 +34,12 @@ private:
     std::mutex mtx;
     // 串行化画像应用，防并发交错产生混合态；可重入避免同线程嵌套死锁。
     std::recursive_mutex applyMtx;
+
+    // 优雅退出：析构置位 + 写 eventfd 唤醒阻塞的 poll/select，cv 打断定时等待
+    std::atomic<bool> shouldExit_{false};
+    int stopEventFd_ = -1;
+    std::mutex stopMtx_;
+    std::condition_variable stopCv_;
 
     Function function;
     JsonConfig conf;
@@ -51,12 +61,39 @@ public:
     Schedule() {
         pinSelfToLittleCores();   // 必须在创建工作线程前设主线程亲和性，新线程继承之
         Init();
+        stopEventFd_ = eventfd(0, EFD_CLOEXEC);
         // 单 inotify 线程监控三个配置文件，替代原 config/json/perapp 三线程
         threads.emplace_back(thread(&Schedule::fileWatchTask, this));
 
         if (Config::AppProfile::enable) {
             threads.emplace_back(thread(&Schedule::appProfileTask, this));
         }
+    }
+
+    // 同 Function::stopGuards 风格：置位 → 唤醒(cv + eventfd) → join，成员销毁前线程已全部退出
+    ~Schedule() {
+        {
+            std::lock_guard<std::mutex> lk(stopMtx_);
+            shouldExit_.store(true);
+        }
+        stopCv_.notify_all();
+        if (stopEventFd_ >= 0) {
+            eventfd_write(stopEventFd_, 1);
+        }
+        for (auto& t : threads) {
+            if (t.joinable()) t.join();
+        }
+        if (stopEventFd_ >= 0) {
+            close(stopEventFd_);
+            stopEventFd_ = -1;
+        }
+    }
+
+    // 可被析构即时打断的睡眠；返回 true 表示收到停止请求
+    bool waitStop(int ms) {
+        std::unique_lock<std::mutex> lk(stopMtx_);
+        return stopCv_.wait_for(lk, std::chrono::milliseconds(ms),
+                                [this] { return shouldExit_.load(); });
     }
 
     // qlib::string 跨堆分配比较是 UB，用 strcmp 走 c_str()
@@ -383,6 +420,8 @@ public:
 
     // perapp 改变后包名不变但画像可能变，必须强制重算（绕过 pkg==lastTopApp 去重）
     void onPerappChanged() {
+        // 持 applyMtx 改写全局画像表，与 applyAppProfile/Release 的并发读互斥
+        std::lock_guard<std::recursive_mutex> lk(applyMtx);
         conf.loadPerApp();
         logger.Info("perapp_powermode.txt 已重载 (%d 条映射), 重算当前前台画像",
                     Config::AppProfile::perAppCount);
@@ -413,6 +452,8 @@ public:
             logger.Debug("mode.txt 内容未变,跳过重载");
             return;
         }
+        // readConfig 改写 Performances/AppProfile 等全局 string，必须与画像应用互斥
+        std::lock_guard<std::recursive_mutex> lk(applyMtx);
         if (conf.readConfig()) {
             applyAllConfig();
             lastHash = h;
@@ -427,6 +468,7 @@ public:
             logger.Debug("config.json 内容未变,跳过重载");
             return;
         }
+        std::lock_guard<std::recursive_mutex> lk(applyMtx);
         if (conf.readConfig()) {
             function.ReloadFunC();
             applyAllConfig();
@@ -439,28 +481,46 @@ public:
     // 单 inotify 实例 + 阻塞 read 监控目录下三个配置文件（合并原三线程，消除 5s select 定时唤醒）
     // /sdcard/ 是 FUSE，inotify 不能监控文件，只能监控目录再过滤文件名
     void fileWatchTask() {
-        sleep(2);
+        if (waitStop(2000)) return;
         const char* watchDir = "/sdcard/Android/CTS";
         size_t lastModeHash = 0, lastJsonHash = 0;
-        while (true) {
+        while (!shouldExit_.load()) {
             int fd = inotify_init1(IN_CLOEXEC);
             if (fd < 0) {
                 logger.Error("inotify_init 失败: %s", strerror(errno));
-                sleep(5);
+                if (waitStop(5000)) break;
                 continue;
             }
             int wd = inotify_add_watch(fd, watchDir, IN_CLOSE_WRITE | IN_MOVED_TO);
             if (wd < 0) {
                 logger.Error("inotify_add_watch 失败 %s: %s", watchDir, strerror(errno));
                 close(fd);
-                sleep(5);
+                if (waitStop(5000)) break;
                 continue;
             }
 
             bool alive = true;
             alignas(struct inotify_event) char buf[4096];
-            while (alive) {
-                ssize_t len = read(fd, buf, sizeof(buf));  // 阻塞等事件，无定时唤醒
+            while (alive && !shouldExit_.load()) {
+                // poll 同时等 inotify 与停止 eventfd，析构写 eventfd 即可打断阻塞
+                struct pollfd pfds[2] = {
+                    { fd,           POLLIN, 0 },
+                    { stopEventFd_, POLLIN, 0 },
+                };
+                nfds_t nfds = (stopEventFd_ >= 0) ? 2 : 1;
+                int pr = poll(pfds, nfds, (stopEventFd_ >= 0) ? -1 : 1000);
+                if (pr < 0) {
+                    if (errno == EINTR) continue;
+                    alive = false;
+                    break;
+                }
+                if (pr == 0) continue;  // 无 eventfd 时的兜底超时，回头查停止标志
+                if (nfds == 2 && (pfds[1].revents & POLLIN)) break;  // 停止请求
+                if (!(pfds[0].revents & POLLIN)) {
+                    if (pfds[0].revents) alive = false;  // 错误/挂起，重建 inotify
+                    continue;
+                }
+                ssize_t len = read(fd, buf, sizeof(buf));
                 if (len <= 0) {
                     if (len < 0 && errno == EINTR) continue;
                     alive = false;
@@ -488,12 +548,19 @@ public:
         fd_set rfds;
         FD_ZERO(&rfds);
         FD_SET(inotifyFd, &rfds);
+        int maxFd = inotifyFd;
+        // 一并监听停止 eventfd，析构即时打断等待（不消费，外层查 shouldExit_ 退出）
+        if (stopEventFd_ >= 0) {
+            FD_SET(stopEventFd_, &rfds);
+            if (stopEventFd_ > maxFd) maxFd = stopEventFd_;
+        }
         struct timeval tv;
         tv.tv_sec  = maxWaitMs / 1000;
         tv.tv_usec = (maxWaitMs % 1000) * 1000;
-        int ret = select(inotifyFd + 1, &rfds, nullptr, nullptr, &tv);
+        int ret = select(maxFd + 1, &rfds, nullptr, nullptr, &tv);
         if (ret < 0) return (errno == EINTR) ? 0 : -1;
         if (ret == 0) return 0;
+        if (stopEventFd_ >= 0 && FD_ISSET(stopEventFd_, &rfds)) return 0;
         char buf[4096];
         ssize_t n = read(inotifyFd, buf, sizeof(buf));
         (void)n;
@@ -531,6 +598,8 @@ public:
 
     // 游戏档下 ORMS 常把 top-app cpuset 收窄（踢掉 6-7），事件驱动+幂等+节流矫正回全核
     void correctGameTopAppCpus() {
+        // 读 Models/Cpuset 全局 string，与配置重载互斥
+        std::lock_guard<std::recursive_mutex> lk(applyMtx);
         int cur = Config::AppProfile::currentMatch.load();
         if (cur < 0 || cur >= Config::AppProfile::modelCount
             || !Config::AppProfile::Models[cur].isGame) return;
@@ -608,7 +677,7 @@ public:
     }
 
     void appProfileTask() {
-        sleep(5); // 等待系统启动完成
+        if (waitStop(5000)) return; // 等待系统启动完成
 
         // 事件驱动+尾沿防抖：监听 top-app cpuset 变动替代轮询，重操作等前台"安静"kQuietMs 后一次写入
         // 快速连切时持续顺延，不写入风暴；inotify 不可用时退化为轮询
@@ -630,15 +699,16 @@ public:
 
         evalForegroundOnce(true);
 
-        while (true) {
+        while (!shouldExit_.load()) {
             if (scene_.current() == SceneDetector::Scene::Standby) {
-                utils.sleep_ms(8000);   // 熄屏省电，降低复查频率
+                if (waitStop(8000)) break;   // 熄屏省电，降低复查频率
                 continue;
             }
 
             int ev = waitTopAppEvent(fd, wd, kPollIdleMs);
+            if (shouldExit_.load()) break;
             if (ev < 0) {
-                utils.sleep_ms(kPollIdleMs);
+                if (waitStop(kPollIdleMs)) break;
                 evalForegroundOnce(true);
                 correctGameTopAppCpus();
                 continue;
@@ -656,8 +726,14 @@ public:
                 if (more <= 0) break;
                 deferred += kQuietMs;
             }
+            if (shouldExit_.load()) break;
             evalForegroundOnce(true);
             correctGameTopAppCpus();
+        }
+
+        if (fd >= 0) {
+            if (wd >= 0) inotify_rm_watch(fd, wd);
+            close(fd);
         }
     }
 

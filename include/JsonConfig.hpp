@@ -309,8 +309,16 @@ public:
         resetSceneFreq();
     }
 
+    // 发布 GPU 原子快照，供 gpuFreqGuard 跨线程无锁读取
+    static void publishGpuSnapshot() {
+        GpuFreq::min_mhz.store(Fastatoi(GpuFreq::min_freq.c_str()));
+        GpuFreq::max_mhz.store(Fastatoi(GpuFreq::max_freq.c_str()));
+        GpuFreq::enabled.store(GpuFreq::enable ? 1 : 0);
+    }
+
     bool readConfig() {
         resetState();
+        publishGpuSnapshot();   // 重载期间/失败时与清空后的 string 保持一致
 
         ifstream ifs(configPath, std::ios::binary);
         if (!ifs) { logger.Error("无法打开配置文件: %s", configPath); return false; }
@@ -361,6 +369,7 @@ public:
         applyBaseModel();
         loadPerApp();
 
+        publishGpuSnapshot();
         return true;
     }
 

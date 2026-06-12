@@ -672,7 +672,7 @@ public:
     }
 
     void gpuFreqGuard() {
-        if (!GpuFreq::enable) return;
+        if (!GpuFreq::enabled.load()) return;
 
         // 自适应轮询：1s 快轮询防御 ROM(风驰/perfd)覆盖；连续 kStableN 次回读无漂移则
         // 退避一级(+1s, 上限 3s)；检测到漂移/目标变化立即恢复 1s。兜底强制重写仍按 ~10s。
@@ -692,8 +692,9 @@ public:
         std::unique_lock<std::mutex> lk(guardMtx_);
         while (!gpuGuardShouldExit.load()) {
             lk.unlock();
-            int mhzMin = Fastatoi(GpuFreq::min_freq.c_str());
-            int mhzMax = Fastatoi(GpuFreq::max_freq.c_str());
+            // 读原子快照而非全局 string：重载线程并发改写 string 时读 c_str() 是悬垂指针 UB
+            int mhzMin = GpuFreq::min_mhz.load(std::memory_order_relaxed);
+            int mhzMax = GpuFreq::max_mhz.load(std::memory_order_relaxed);
 
             if (mhzMin <= 0 && mhzMax <= 0) {
                 intervalMs   = kFastMs;
