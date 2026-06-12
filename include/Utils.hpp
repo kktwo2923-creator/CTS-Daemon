@@ -261,6 +261,37 @@ public:
         return false;
     }
 
+    // 包进程是否还存活：扫 /proc/<pid>/cmdline，主进程或 pkg:子进程任一在即算运行。
+    // 用于"游戏档保活到退出"——前台离开但进程未死时维持画像。
+    bool isPackageRunning(const char* pkg) {
+        if (!pkg || !*pkg) return false;
+        DIR* d = opendir("/proc");
+        if (!d) return false;
+        bool found = false;
+        struct dirent* e;
+        while ((e = readdir(d)) != nullptr) {
+            if (e->d_name[0] < '1' || e->d_name[0] > '9') continue;
+            bool num = true;
+            for (const char* p = e->d_name; *p; ++p)
+                if (*p < '0' || *p > '9') { num = false; break; }
+            if (!num) continue;
+            char cmdPath[64];
+            snprintf(cmdPath, sizeof(cmdPath), "/proc/%s/cmdline", e->d_name);
+            int cfd = open(cmdPath, O_RDONLY);
+            if (cfd < 0) continue;
+            char cmd[256] = { 0 };
+            ssize_t cn = read(cfd, cmd, sizeof(cmd) - 1);
+            close(cfd);
+            if (cn <= 0) continue;
+            cmd[cn] = '\0';
+            char* colon = strchr(cmd, ':');
+            if (colon) *colon = '\0';
+            if (strcmp(cmd, pkg) == 0) { found = true; break; }
+        }
+        closedir(d);
+        return found;
+    }
+
     // topPkg = Z 序最顶的可见标准 Task（过滤输入法/通知栏等非 standard Task）
     // visible = 所有 visible=true 的 Task 包名（供 isPackageVisible 判小窗场景）
     struct ForegroundSnapshot {

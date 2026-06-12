@@ -46,6 +46,7 @@ private:
     std::string lastTopApp;          // 上一次前台应用包名（用于画像切换去重）
     long long   lastGameCpusetFixMs = 0;  // 游戏档 cpuset 矫正节流: 上次矫正时刻(ms), 防 ping-pong
     long long   blacklistSinceMs    = 0;  // 黑名单前台开始停留时刻(ms), 0=当前前台不在黑名单
+    std::string heldPkg;             // 正在保活的游戏/保活画像包名(进程存活则维持画像), 空=未保活
 
     static long long nowMs() {
         return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -608,33 +609,31 @@ public:
     void evalForegroundOnce(bool fresh) {
         // 串行化"取前台 + 改 lastTopApp/currentMatch + 应用"，防两线程并发写 sysfs
         std::lock_guard<std::recursive_mutex> lk(applyMtx);
+        // 保活：已进入游戏/保活画像时，只要该 App 进程仍存活就维持画像，无视前台变化
+        // (拉输入法/通知栏/回桌面/切别的 App 都不掉)，直到进程退出(被划掉/杀死)才解除。
+        // 满足"检测到游戏包就持续游戏档直到退出"。桌面无事件时由空闲复查兜底检测退出。
+        if (!heldPkg.empty()) {
+            if (utils.isPackageRunning(heldPkg.c_str())) return;
+            logger.Info("保活 App %s 已退出 → 解除保活, 重新评估前台", heldPkg.c_str());
+            heldPkg.clear();
+            Config::AppProfile::currentMatch.store(-1);
+            lastTopApp.clear();
+        }
+
         std::string pkg = fresh ? utils.getTopApp() : utils.getTopAppCached(2500);
         if (pkg.empty() || pkg == "null") return;
 
-        // 黑名单前台（launcher/systemui/输入法等）。需区分两种情况：
-        //  ① 输入法/通知栏等覆盖在游戏/保活画像上、原 App 仍可见 → 保活，永不退档；
-        //  ② 真离开（回桌面，原 App 已不可见）或普通画像 → 短去抖后退回基础档，
-        //     否则游戏画像(高 min + down_rate_limit) 永久生效 → "CPU 锁 max 不降频"。
-        //  桌面无 top-app 事件，由 appProfileTask 的自适应空闲复查兜底再次进入此分支。
+        // 黑名单前台(launcher/systemui/输入法等)且非保活态：持续停留(回桌面)→ 退基础档，
+        // 防普通画像残留高频。(保活画像在上面已 return，不会到这。)
         if (Config::AppProfile::isBlacklisted(pkg.c_str())) {
             constexpr long long kBlacklistHoldMs = 800;
-            int cm = Config::AppProfile::currentMatch.load();
-            bool keepAlive = (cm >= 0 && cm < Config::AppProfile::modelCount &&
-                              (Config::AppProfile::Models[cm].isGame ||
-                               Config::AppProfile::Models[cm].keepAlive));
-            if (keepAlive && !lastTopApp.empty() &&
-                (utils.isPackageInTopApp(lastTopApp.c_str()) ||
-                 utils.isPackageVisible(lastTopApp.c_str()))) {
-                blacklistSinceMs = 0;   // 原 App 仍可见 → 保活
-                return;
-            }
             long long t = nowMs();
             if (blacklistSinceMs == 0) { blacklistSinceMs = t; return; }
             if (t - blacklistSinceMs < kBlacklistHoldMs) return;
-            if (cm >= 0) {
+            if (Config::AppProfile::currentMatch.load() >= 0) {
                 Config::AppProfile::currentMatch.store(-1);
-                lastTopApp.clear();   // 回到应用时能重新匹配画像
-                logger.Info("前台停留黑名单(%s)且原画像已离开 → 退回基础档", pkg.c_str());
+                lastTopApp.clear();
+                logger.Info("前台停留黑名单(%s) → 退回基础档", pkg.c_str());
                 applyWithProfile();
             }
             blacklistSinceMs = 0;
@@ -643,23 +642,6 @@ public:
         blacklistSinceMs = 0;
 
         if (pkg == lastTopApp) return;
-
-        // 游戏画像下新获焦是非游戏 App 但游戏窗口仍可见（小窗覆盖）→ 保持游戏画像不切
-        // 主信号用 Task visible 而非窗口模式（ColorOS 小窗报 fullscreen，窗口模式判不出）
-        {
-            int curMatch = Config::AppProfile::currentMatch.load();
-            if (curMatch >= 0 && curMatch < Config::AppProfile::modelCount
-                && Config::AppProfile::Models[curMatch].isGame && !lastTopApp.empty()) {
-                int nm = Config::AppProfile::findMatchingModel(pkg.c_str());
-                bool newIsGame = (nm >= 0 && Config::AppProfile::Models[nm].isGame);
-                if (!newIsGame &&
-                    (utils.isPackageInTopApp(lastTopApp.c_str()) || utils.isPackageVisible(lastTopApp.c_str()))) {
-                    logger.Debug("小窗覆盖游戏(前台=%s, 游戏仍可见) → 保持游戏画像", pkg.c_str());
-                    return;
-                }
-            }
-        }
-
         lastTopApp = pkg;
         int newMatch = Config::AppProfile::findMatchingModel(pkg.c_str());
 
@@ -671,6 +653,8 @@ public:
                 const auto& mdl = Config::AppProfile::Models[newMatch];
                 logger.Info("前台: %s → 档[%s]%s", pkg.c_str(),
                             mdl.modelName.c_str(), mdl.isGame ? " (游戏)" : "");
+                // 游戏/保活画像 → 记下包名,持续保活直到该进程退出
+                if (mdl.isGame || mdl.keepAlive) heldPkg = pkg;
             } else {
                 logger.Info("前台: %s → 默认档(无匹配画像)", pkg.c_str());
             }
