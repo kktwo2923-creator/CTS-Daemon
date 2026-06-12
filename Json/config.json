@@ -69,7 +69,7 @@
       "freq_max_c0": "2100000",
       "freq_min_c1": "768000",
       "freq_max_c1": "1977600",
-      "gpu_min_mhz": "0",
+      "gpu_min_mhz": "160",
       "gpu_max_mhz": "400",
       "CoreOnline": {
         "Core0": "1",
@@ -97,7 +97,7 @@
       "freq_max_c0": "2496000",
       "freq_min_c1": "768000",
       "freq_max_c1": "2880000",
-      "gpu_min_mhz": "0",
+      "gpu_min_mhz": "160",
       "gpu_max_mhz": "600",
       "CoreOnline": {
         "Core0": "1",
@@ -125,7 +125,7 @@
       "freq_max_c0": "2496000",
       "freq_min_c1": "883200",
       "freq_max_c1": "3129600",
-      "gpu_min_mhz": "0",
+      "gpu_min_mhz": "160",
       "gpu_max_mhz": "1100",
       "CoreOnline": {
         "Core0": "1",
@@ -154,7 +154,7 @@
       "freq_max_c0": "3628800",
       "freq_min_c1": "1228800",
       "freq_max_c1": "4608000",
-      "gpu_min_mhz": "0",
+      "gpu_min_mhz": "160",
       "gpu_max_mhz": "1200",
       "CoreOnline": {
         "Core0": "1",
@@ -207,7 +207,7 @@
       "freq_max_c0": "5000000",
       "freq_min_c1": "1200000",
       "freq_max_c1": "5000000",
-      "gpu_min_mhz": "0",
+      "gpu_min_mhz": "160",
       "gpu_max_mhz": "1200",
       "CoreOnline": {
         "Core0": "1",
@@ -245,7 +245,7 @@
       "freq_max_c0": "1400000",
       "freq_min_c1": "768000",
       "freq_max_c1": "1400000",
-      "gpu_min_mhz": "0",
+      "gpu_min_mhz": "160",
       "gpu_max_mhz": "700",
       "CoreOnline": {
         "Core0": "1",
@@ -278,7 +278,7 @@
       "freq_max_c0": "2496000",
       "freq_min_c1": "768000",
       "freq_max_c1": "2880000",
-      "gpu_min_mhz": "0",
+      "gpu_min_mhz": "160",
       "gov_c0": {
         "governor": "conservative"
       },
@@ -299,7 +299,7 @@
       "freq_max_c0": "1555200",
       "freq_min_c1": "537600",
       "freq_max_c1": "1555200",
-      "gpu_min_mhz": "0",
+      "gpu_min_mhz": "160",
       "gpu_max_mhz": "500",
       "gov_c0": {
         "governor": "conservative"
@@ -323,7 +323,7 @@
       "freq_max_c0": "1113600",
       "freq_min_c1": "384000",
       "freq_max_c1": "1300000",
-      "gpu_min_mhz": "0",
+      "gpu_min_mhz": "160",
       "gpu_max_mhz": "400",
       "gov_c0": {
         "governor": "conservative"

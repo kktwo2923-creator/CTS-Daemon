@@ -69,7 +69,7 @@
       "freq_max_c0": "1689600",
       "freq_min_c1": "537600",
       "freq_max_c1": "1920000",
-      "gpu_min_mhz": "0",
+      "gpu_min_mhz": "160",
       "gpu_max_mhz": "500",
       "CoreOnline": {
         "Core0": "1",
@@ -107,7 +107,7 @@
       "freq_max_c0": "1804800",
       "freq_min_c1": "537600",
       "freq_max_c1": "2246400",
-      "gpu_min_mhz": "0",
+      "gpu_min_mhz": "160",
       "gpu_max_mhz": "800",
       "CoreOnline": {
         "Core0": "1",
@@ -145,7 +145,7 @@
       "freq_max_c0": "1804800",
       "freq_min_c1": "768000",
       "freq_max_c1": "2515200",
-      "gpu_min_mhz": "0",
+      "gpu_min_mhz": "160",
       "gpu_max_mhz": "1000",
       "CoreOnline": {
         "Core0": "1",
@@ -184,7 +184,7 @@
       "freq_max_c0": "3628800",
       "freq_min_c1": "1228800",
       "freq_max_c1": "4608000",
-      "gpu_min_mhz": "0",
+      "gpu_min_mhz": "160",
       "gpu_max_mhz": "1200",
       "CoreOnline": {
         "Core0": "1",
@@ -247,7 +247,7 @@
       "freq_max_c0": "5000000",
       "freq_min_c1": "1200000",
       "freq_max_c1": "5000000",
-      "gpu_min_mhz": "0",
+      "gpu_min_mhz": "160",
       "gpu_max_mhz": "1200",
       "CoreOnline": {
         "Core0": "1",
@@ -295,7 +295,7 @@
       "freq_max_c0": "1400000",
       "freq_min_c1": "384000",
       "freq_max_c1": "1400000",
-      "gpu_min_mhz": "0",
+      "gpu_min_mhz": "160",
       "gpu_max_mhz": "600",
       "freq_max_c2": "1400000",
       "freq_min_c2": "384000",
@@ -342,7 +342,7 @@
       "freq_min_c2": "384000",
       "freq_max_c3": "2035200",
       "freq_min_c3": "384000",
-      "gpu_min_mhz": "0",
+      "gpu_min_mhz": "160",
       "gov_c0": {
         "governor": "conservative"
       },
@@ -369,7 +369,7 @@
       "freq_max_c0": "1689600",
       "freq_min_c1": "384000",
       "freq_max_c1": "1920000",
-      "gpu_min_mhz": "0",
+      "gpu_min_mhz": "160",
       "gpu_max_mhz": "400",
       "freq_max_c2": "1708800",
       "freq_min_c2": "384000",
@@ -403,7 +403,7 @@
       "freq_max_c0": "1689600",
       "freq_min_c1": "384000",
       "freq_max_c1": "1920000",
-      "gpu_min_mhz": "0",
+      "gpu_min_mhz": "160",
       "gpu_max_mhz": "400",
       "freq_max_c2": "1708800",
       "freq_min_c2": "384000",
