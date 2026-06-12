@@ -1,6 +1,4 @@
 #pragma once
-
-// eventfd.h 用到 uint64_t，须在 JsonConfig 的 using namespace qlib 生效前包含，避免歧义
 #include <sys/eventfd.h>
 #include "LibUtils.hpp"
 #include "Function.hpp"
