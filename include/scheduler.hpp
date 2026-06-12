@@ -4,7 +4,6 @@
 #include <sys/eventfd.h>
 #include "LibUtils.hpp"
 #include "Function.hpp"
-#include "SceneDetector.hpp"
 #include <sys/inotify.h>
 #include <sys/resource.h>
 #include <poll.h>
@@ -45,16 +44,14 @@ private:
     JsonConfig conf;
     Logger logger;
     Utils utils;
-    SceneDetector scene_;
 
-    bool cpuBoost = false;
     std::string lastTopApp;          // 上一次前台应用包名（用于画像切换去重）
     long long   lastGameCpusetFixMs = 0;  // 游戏档 cpuset 矫正节流: 上次矫正时刻(ms), 防 ping-pong
 
     // 缓存上一次写入的 (min,max,gov)，相同则跳过 sysfs 写，避免抖动场景重复刷盘
-    string_t lastMinFreq[4];
-    string_t lastMaxFreq[4];
-    string_t lastGovernor[4];
+    string_t lastMinFreq[Config::kClusterCount];
+    string_t lastMaxFreq[Config::kClusterCount];
+    string_t lastGovernor[Config::kClusterCount];
 public:
     Schedule& operator=(Schedule&&) = delete;
 
@@ -96,7 +93,7 @@ public:
                                 [this] { return shouldExit_.load(); });
     }
 
-    // qlib::string 跨堆分配比较是 UB，用 strcmp 走 c_str()
+    // qlib::string operator== 已修为按内容比较；此处保守保留 strcmp（语义本就正确）
     static inline bool str_eq(const string_t& a, const string_t& b) {
         return strcmp(a.c_str(), b.c_str()) == 0;
     }
@@ -105,7 +102,7 @@ public:
     void FreqWriter(const int Policy, const string_t& MinFreq, const string_t& MaxFreq, const string_t& Governor) {
         std::lock_guard<std::mutex> lock(mtx);
         int cluster = -1;
-        for (int i = 0; i <= 3; i++) {
+        for (int i = 0; i < kClusterCount; i++) {
             if (Config::Policy::CpuPolicy[i] == Policy) { cluster = i; break; }
         }
         if (cluster >= 0 &&
@@ -173,19 +170,10 @@ public:
         }
     }
 
-    void Boost() {
-        for (int i = 0; i <= 3; i++) {
-            if (Policy::CpuPolicy[i] == -1) continue;
-            FreqWriter(Policy::CpuPolicy[i], Performances::MinFreq[i],
-                    LaunchBoost::BoostFreq[i], Performances::CpuGovernor[i]);
-            utils.sleep_ms(LaunchBoost::boost_rate_limit_ms);
-        }
-    }
-
     // 返回 core 所属的 policy（起始核 <= core 的最大 CpuPolicy），找不到返回 -1
     int policyForCore(int core) {
         int best = -1;
-        for (int i = 0; i <= 3; i++) {
+        for (int i = 0; i < kClusterCount; i++) {
             int p = Policy::CpuPolicy[i];
             if (p != -1 && p <= core && p > best) best = p;
         }
@@ -206,17 +194,11 @@ public:
         }
     }
 
-    // scene 参数保留签名兼容性，CPU 永远走基础 mode（场景识别已禁用）
-    void applyScene(SceneDetector::Scene scene) {
-        (void)scene;
-        Release();
-    }
-
     // 优先级：AppProfile > Performances；空字段回退到 Performances；GPU/核心仅在画像中定义时才覆盖
-    void applyAppProfile(int modelIdx, SceneDetector::Scene scene) {
+    void applyAppProfile(int modelIdx) {
         if (modelIdx < 0 || modelIdx >= Config::AppProfile::modelCount) {
-            // 无匹配画像，使用场景频率
-            applyScene(scene);
+            // 无匹配画像，回到基础 mode
+            applyBaseMode();
             return;
         }
 
@@ -225,13 +207,13 @@ public:
         // 先开核心再写 governor/频率，否则离线核收不到 governor 写入
         {
             bool hasCustomOnline = false;
-            for (int i = 0; i <= 7; i++) {
+            for (int i = 0; i < kCoreCount; i++) {
                 if (model.Online[i] != -1) { hasCustomOnline = true; break; }
             }
             if (hasCustomOnline) {
                 char path[256];
                 bool broughtOnline = false;
-                for (int i = 0; i <= 7; i++) {
+                for (int i = 0; i < kCoreCount; i++) {
                     if (model.Online[i] == -1) continue;
                     FastSnprintf(path, sizeof(path), onlinePath, i);
                     utils.WriteInt(path, model.Online[i]);
@@ -240,7 +222,7 @@ public:
                 }
                 // 等新上线的簇 affected_cpus 稳定后再写频率/调速器，并重落 cpuset
                 if (broughtOnline) {
-                    for (int i = 0; i <= 7; i++)
+                    for (int i = 0; i < kCoreCount; i++)
                         if (model.Online[i] == 1) waitClusterReady(policyForCore(i));
                     function.cpusetFunction();
                 }
@@ -250,7 +232,7 @@ public:
             }
         }
 
-        for (int i = 0; i <= 3; i++) {
+        for (int i = 0; i < kClusterCount; i++) {
             if (Policy::CpuPolicy[i] == -1) continue;
 
             // 回退：AppProfile -> Performances
@@ -270,7 +252,7 @@ public:
         }
 
         char spPath[256];
-        for (int i = 0; i <= 3; i++) {
+        for (int i = 0; i < kClusterCount; i++) {
             if (Policy::CpuPolicy[i] == -1) continue;
             if (model.SchedParamCount[i] == 0) continue;
             // governor 留空则无目标路径，跳过 SchedParam
@@ -293,16 +275,16 @@ public:
                     model.isGame ? 1 : 0);
     }
 
-    void Release() {
+    void applyBaseMode() {
         // 先上线核心再写 governor/频率，否则离线核收不到 governor 写入
         restoreBaseCoresIfNeeded();
 
-        for (int i = 0; i <= 3; i++) {
+        for (int i = 0; i < kClusterCount; i++) {
             if (Policy::CpuPolicy[i] == -1) continue;
             FreqWriter(Policy::CpuPolicy[i], Performances::MinFreq[i], 
                     Performances::MaxFreq[i], Performances::CpuGovernor[i]);
         }
-        // Release 必须重写基础 SchedParam，否则 governor tunables 保留游戏画像值导致不降频
+        // applyBaseMode 必须重写基础 SchedParam，否则 governor tunables 保留游戏画像值导致不降频
         SchedParam();
         applyBaseGpu();
         function.FeasFunc(false);
@@ -317,7 +299,7 @@ public:
 
     void Reset() {
         invalidateFreqCache();
-        for (int i = 0; i <= 3; i++) {
+        for (int i = 0; i < kClusterCount; i++) {
             if (Policy::CpuPolicy[i] == -1) continue;
             FreqWriter(Policy::CpuPolicy[i], "0", "2147483647",
                     function.checkQcom() ? "walt" : "sugov_ext");
@@ -326,46 +308,34 @@ public:
     }
 
     void invalidateFreqCache() {
-        for (int i = 0; i <= 3; i++) {
+        for (int i = 0; i < kClusterCount; i++) {
             lastMinFreq[i].clear();
             lastMaxFreq[i].clear();
             lastGovernor[i].clear();
         }
     }
 
-    void release() {
+    void applyCurrentMode() {
         if (conf.mode.empty()) {
             logger.Warn("情景模式为空，跳过应用配置");
             return;
         }
         logger.Info("情景模式: %s 已启用", conf.mode.c_str());
-        if (cpuBoost) {
-            cpuBoost = false;
-            if (Config::SceneCfg::enable) {
-                if (scene_.triggerAmSwitch()) {
-                    applyWithProfile(scene_.current());
-                    return;
-                }
-            } else {
-                Boost();
-                return;
-            }
-        }
         if (conf.mode == "fast" && OfficialMode::enable) {
             Reset();
             return;
         }
-        applyWithProfile(scene_.current());
+        applyWithProfile();
     }
 
     // 统一频率应用入口：有匹配画像则用画像，否则用基础 mode
-    void applyWithProfile(SceneDetector::Scene scene) {
+    void applyWithProfile() {
         std::lock_guard<std::recursive_mutex> lk(applyMtx);
         int matchIdx = Config::AppProfile::currentMatch.load();
         if (Config::AppProfile::enable && matchIdx >= 0) {
-            applyAppProfile(matchIdx, scene);
+            applyAppProfile(matchIdx);
         } else {
-            Release();
+            applyBaseMode();
             restoreBaseCoresIfNeeded();
         }
     }
@@ -373,14 +343,14 @@ public:
     void restoreBaseCoresIfNeeded() {
         bool anyDefined = false;
         bool anyOnline  = false;
-        for (int i = 0; i <= 7; i++) {
+        for (int i = 0; i < kCoreCount; i++) {
             if (Performances::Online[i] != -1) anyDefined = true;
             if (Performances::Online[i] == 1)  anyOnline  = true;
         }
         if (anyDefined) {
             online();
             // 等新上线的簇稳定后再写 governor，hotplug 异步，内核不自动还原 cpuset
-            for (int i = 0; i <= 7; i++)
+            for (int i = 0; i < kCoreCount; i++)
                 if (Performances::Online[i] == 1) waitClusterReady(policyForCore(i));
             if (anyOnline) function.cpusetFunction();
         }
@@ -388,7 +358,7 @@ public:
 
     void online() {
         char path[256];
-        for (int i = 0; i <= 7; i++) {
+        for (int i = 0; i < kCoreCount; i++) {
             if (Performances::Online[i] == -1) continue; // -1 = 跳过，不误关核心
             FastSnprintf(path, sizeof(path), onlinePath, i);
             utils.WriteInt(path, Performances::Online[i]);
@@ -398,10 +368,10 @@ public:
 
     void SchedParam() {
         char path[256];
-        for (int i = 0; i <= 3; i++) {
+        for (int i = 0; i < kClusterCount; i++) {
             if (Policy::CpuPolicy[i] == -1) continue;
             if (Performances::CpuGovernor[i].empty()) continue;
-            for (int j = 1; j <= 16; j++) {
+            for (int j = 0; j < kMaxSchedParams; j++) {
                 if (conf.schedParam[i].Name[j].empty()) continue;
                 FastSnprintf(path, sizeof(path), SchedParamPath, Policy::CpuPolicy[i], Performances::CpuGovernor[i].c_str(), conf.schedParam[i].Name[j].c_str());
                 utils.FileWrite(path, conf.schedParam[i].Value[j].c_str());
@@ -412,7 +382,7 @@ public:
 
     void applyAllConfig() {
         std::lock_guard<std::recursive_mutex> lk(applyMtx);
-        release();
+        applyCurrentMode();
         SchedParam();
         online();
         function.gpuFreqControl();
@@ -420,7 +390,7 @@ public:
 
     // perapp 改变后包名不变但画像可能变，必须强制重算（绕过 pkg==lastTopApp 去重）
     void onPerappChanged() {
-        // 持 applyMtx 改写全局画像表，与 applyAppProfile/Release 的并发读互斥
+        // 持 applyMtx 改写全局画像表，与 applyAppProfile/applyBaseMode 的并发读互斥
         std::lock_guard<std::recursive_mutex> lk(applyMtx);
         conf.loadPerApp();
         logger.Info("perapp_powermode.txt 已重载 (%d 条映射), 重算当前前台画像",
@@ -672,7 +642,7 @@ public:
             } else {
                 logger.Info("前台: %s → 默认档(无匹配画像)", pkg.c_str());
             }
-            applyWithProfile(scene_.current());
+            applyWithProfile();
         }
     }
 
@@ -700,11 +670,6 @@ public:
         evalForegroundOnce(true);
 
         while (!shouldExit_.load()) {
-            if (scene_.current() == SceneDetector::Scene::Standby) {
-                if (waitStop(8000)) break;   // 熄屏省电，降低复查频率
-                continue;
-            }
-
             int ev = waitTopAppEvent(fd, wd, kPollIdleMs);
             if (shouldExit_.load()) break;
             if (ev < 0) {
@@ -809,7 +774,7 @@ public:
         logger.Info("日志等级: %s",   Meta::loglevel.c_str());
         function.AllFunC();
         if (configOk) {
-            release();
+            applyCurrentMode();
             online();
             SchedParam();
             function.gpuFreqControl();

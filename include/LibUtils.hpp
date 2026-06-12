@@ -8,13 +8,19 @@
 #include <cstdint>
 
 namespace LibUtils {
+    // 支持可选前导负号；非数字字符即停（与原行为一致）
     static int Fastatoi(const char* str) {
+        bool neg = false;
+        if (*str == '-') {
+            neg = true;
+            ++str;
+        }
         unsigned int result = 0;
         while (*str >= '0' && *str <= '9') {
             result = result * 10 + (*str - '0');
             ++str;
         }
-        return result;
+        return neg ? -(int)result : (int)result;
     }
 
     static long Faststrlen(const char* str) {
@@ -95,7 +101,7 @@ namespace LibUtils {
         return (int)(p - buf);              
     }
     
-    int FastSnprintf(char* buf, size_t size, const char* fmt, ...) {
+    inline int FastSnprintf(char* buf, size_t size, const char* fmt, ...) {
         va_list ap;
         va_start(ap, fmt);
         int r = FastVsnprintf(buf, size, fmt, ap);

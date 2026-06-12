@@ -48,7 +48,7 @@ public:
         Log(LOG_LEVEL::ERROR, message, std::forward<Args>(args)...);
     }
 
-    // qlib::string operator== 跨堆分配有 UB，改用 strcmp 走 c_str()
+    // qlib::string operator== 已修为按内容比较；此处保守保留 strcmp（语义本就正确）
     void setLogLevel(string_t& level) {
         const char* s = level.c_str();
         if      (!strcmp(s, "DEBUG")) logLevel_ = LOG_LEVEL::DEBUG;

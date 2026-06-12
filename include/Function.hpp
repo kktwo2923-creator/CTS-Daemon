@@ -115,7 +115,7 @@ public:
         logger.Info("Cpuset OK");
     }
 
-    bool writeSysfsLocked(const char* path, const char* value, int valLen) {
+    bool writeSysfs(const char* path, const char* value, int valLen) {
         if (!path || !value || valLen <= 0) return false;
 
         // 新 SoC（如 SM8850）GPU sysfs 默认 0444，open 失败时 chmod 后重试
@@ -318,7 +318,7 @@ public:
 
         if (len <= 0) return false;
 
-        bool ok = writeSysfsLocked(path, valStr, len);
+        bool ok = writeSysfs(path, valStr, len);
 
         if (ok) {
             logger.Debug("GPU频率写入成功: %s = %s", path, valStr);
@@ -519,7 +519,7 @@ public:
             char pwrBuf[16];
             int pwrLen = FastSnprintf(pwrBuf, sizeof(pwrBuf), "%d", maxPwr);
 
-            if (writeSysfsLocked(maxPwrPath, pwrBuf, pwrLen)) {
+            if (writeSysfs(maxPwrPath, pwrBuf, pwrLen)) {
                 maxDone = true;
             }
         }
@@ -546,7 +546,7 @@ public:
             char pwrBuf[16];
             int pwrLen = FastSnprintf(pwrBuf, sizeof(pwrBuf), "%d", minPwr);
 
-            if (writeSysfsLocked(minPwrPath, pwrBuf, pwrLen)) {
+            if (writeSysfs(minPwrPath, pwrBuf, pwrLen)) {
                 minDone = true;
             }
         }

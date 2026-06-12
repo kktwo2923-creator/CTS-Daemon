@@ -20,7 +20,7 @@ private:
     char buff[256];
 
 public:
-    SchedParam  schedParam[4];
+    SchedParam  schedParam[kClusterCount];
     std::string mode;
     int         baseModelIdx = -1;
 
@@ -87,10 +87,7 @@ public:
         try {
             string_t s = node[key].template get<string_t>();
             if (s.empty()) return false;
-            int v = Fastatoi(s.c_str());
-            // Fastatoi 不支持负号，"-1" 特例补丁
-            if (s.c_str()[0] == '-') v = -Fastatoi(s.c_str() + 1);
-            out = v;
+            out = Fastatoi(s.c_str());
             return true;
         } catch (...) {}
         return false;
@@ -139,7 +136,7 @@ public:
         } catch (...) {}
 
         // 频率 freq_min_c0 / freq_max_c0 / ...
-        for (int i = 0; i <= 3; i++) {
+        for (int i = 0; i < kClusterCount; i++) {
             FastSnprintf(buff, sizeof(buff), "freq_min_c%d", i);
             readFreq(node, buff, out.MinFreq[i]);
             FastSnprintf(buff, sizeof(buff), "freq_max_c%d", i);
@@ -159,7 +156,7 @@ public:
 
         try {
             auto& coreNode = node["CoreOnline"];
-            for (int i = 0; i <= 7; i++) {
+            for (int i = 0; i < kCoreCount; i++) {
                 FastSnprintf(buff, sizeof(buff), "Core%d", i);
                 int v;
                 if (readInt(coreNode, buff, v)) {
@@ -182,7 +179,7 @@ public:
         };
         constexpr int N = sizeof(commonParams) / sizeof(commonParams[0]);
 
-        for (int i = 0; i <= 3; i++) {
+        for (int i = 0; i < kClusterCount; i++) {
             FastSnprintf(buff, sizeof(buff), "gov_c%d", i);
             try {
                 auto& gov = node[buff];
@@ -190,7 +187,7 @@ public:
                 try {
                     auto& params = gov["params"];
                     int spCount = 0;
-                    for (int k = 0; k < N && spCount < 16; k++) {
+                    for (int k = 0; k < N && spCount < kMaxSchedParams; k++) {
                         string_t v;
                         if (readStr(params, commonParams[k], v) && !v.empty()) {
                             out.SchedParamName [i][spCount] = commonParams[k];
@@ -206,7 +203,7 @@ public:
         // 兼容 "governor":{"c0":"hmbird",...} 嵌套格式，仅当 gov_cN 未读到时补读
         try {
             auto& govObj = node["governor"];
-            for (int i = 0; i <= 3; i++) {
+            for (int i = 0; i < kClusterCount; i++) {
                 if (!out.Governor[i].empty()) continue;
                 FastSnprintf(buff, sizeof(buff), "c%d", i);
                 string_t v;
@@ -216,60 +213,9 @@ public:
         } catch (...) {}
     }
 
-    void resetSceneFreq() {
-        for (int s = 0; s < SceneFreq::SCENE_COUNT; s++) {
-            for (int i = 0; i <= 3; i++) {
-                SceneFreq::MinFreq [s][i] = "";
-                SceneFreq::MaxFreq [s][i] = "";
-                SceneFreq::Governor[s][i] = "";
-            }
-        }
-    }
-
-    template <class Node>
-    void parseScenesNode(Node& sceneRoot) {
-        static const char* sceneNames[] = {
-            "None", "Touch", "AmSwitch", "HeavyLoad", "Standby"
-        };
-        int loaded = 0;
-        for (int s = 0; s < SceneFreq::SCENE_COUNT; s++) {
-            try {
-                auto& oneScene = sceneRoot[sceneNames[s]];
-                bool any = false;
-                for (int i = 0; i <= 3; i++) {
-                    FastSnprintf(buff, sizeof(buff), "freq_min_c%d", i);
-                    if (readFreq(oneScene, buff, SceneFreq::MinFreq[s][i])) any = true;
-                    FastSnprintf(buff, sizeof(buff), "freq_max_c%d", i);
-                    if (readFreq(oneScene, buff, SceneFreq::MaxFreq[s][i])) any = true;
-
-                    // 兼容旧嵌套写法 MinFreq/MaxFreq/governor:{cN:...}
-                    FastSnprintf(buff, sizeof(buff), "c%d", i);
-                    string_t v;
-                    try {
-                        if (readStr(oneScene["MinFreq"], buff, v) && !v.empty()) {
-                            SceneFreq::MinFreq[s][i] = v; any = true;
-                        }
-                    } catch (...) {}
-                    try {
-                        if (readStr(oneScene["MaxFreq"], buff, v) && !v.empty()) {
-                            SceneFreq::MaxFreq[s][i] = v; any = true;
-                        }
-                    } catch (...) {}
-                    try {
-                        if (readStr(oneScene["governor"], buff, v) && !v.empty()) {
-                            SceneFreq::Governor[s][i] = v; any = true;
-                        }
-                    } catch (...) {}
-                }
-                if (any) loaded++;
-            } catch (...) {}
-        }
-        if (loaded > 0) logger.Info("场景频率已加载 %d 个", loaded);
-    }
-
     void resetState() {
-        for (int i = 0; i <= 3; i++) {
-            for (int j = 0; j < 24; j++) {
+        for (int i = 0; i < kClusterCount; i++) {
+            for (int j = 0; j < kMaxSchedParams; j++) {
                 schedParam[i].Name [j] = "";
                 schedParam[i].Value[j] = "";
             }
@@ -278,9 +224,9 @@ public:
             Performances::CpuGovernor[i] = "";
             LaunchBoost::BoostFreq[i]    = "";
         }
-        for (int i = 0; i <= 7; i++) Performances::Online[i] = -1;
+        for (int i = 0; i < kCoreCount; i++) Performances::Online[i] = -1;
         // 热重载时需清簇映射，防止删掉的 cN 键残留旧值
-        for (int i = 0; i <= 3; i++) Policy::CpuPolicy[i] = -1;
+        for (int i = 0; i < kClusterCount; i++) Policy::CpuPolicy[i] = -1;
         GpuFreq::min_freq = "";
         GpuFreq::max_freq = "";
         Meta::name = ""; Meta::author = ""; Meta::loglevel = "";
@@ -295,18 +241,17 @@ public:
             auto& m = AppProfile::Models[i];
             m.modelName = ""; m.modeName = ""; m.isGame = false; m.keepAlive = false; m.packageCount = 0;
             for (int j = 0; j < 32; j++) m.packages[j] = "";
-            for (int j = 0; j <= 3; j++) {
+            for (int j = 0; j < kClusterCount; j++) {
                 m.MinFreq[j] = ""; m.MaxFreq[j] = ""; m.Governor[j] = "";
                 m.SchedParamCount[j] = 0;
-                for (int k = 0; k < 16; k++) {
+                for (int k = 0; k < kMaxSchedParams; k++) {
                     m.SchedParamName [j][k] = "";
                     m.SchedParamValue[j][k] = "";
                 }
             }
             m.GpuMinFreq = ""; m.GpuMaxFreq = "";
-            for (int j = 0; j <= 7; j++) m.Online[j] = -1;
+            for (int j = 0; j < kCoreCount; j++) m.Online[j] = -1;
         }
-        resetSceneFreq();
     }
 
     // 发布 GPU 原子快照，供 gpuFreqGuard 跨线程无锁读取
@@ -340,7 +285,7 @@ public:
         // ---- Policy ----
         try {
             auto& p = json["Policy"];
-            for (int i = 0; i <= 3; i++) {
+            for (int i = 0; i < kClusterCount; i++) {
                 FastSnprintf(buff, sizeof(buff), "c%d", i);
                 int v;
                 if (readInt(p, buff, v)) {
@@ -443,7 +388,7 @@ private:
                 readInt (l, "boost_rate_limit_ms", LaunchBoost::boost_rate_limit_ms);
                 try {
                     auto& bf = l["BoostFreq"];
-                    for (int i = 0; i <= 3; i++) {
+                    for (int i = 0; i < kClusterCount; i++) {
                         FastSnprintf(buff, sizeof(buff), "c%d", i);
                         readStr(bf, buff, LaunchBoost::BoostFreq[i]);
                     }
@@ -475,32 +420,8 @@ private:
             } catch (...) {}
 
             try {
-                auto& sc = F["SceneDetect"];
-                readBool(sc, "enable",                  SceneCfg::enable);
-                readInt (sc, "heavy_load_thd",          SceneCfg::heavy_load_thd);
-                readInt (sc, "idle_load_thd",           SceneCfg::idle_load_thd);
-                readInt (sc, "heavy_confirm_count",     SceneCfg::heavy_confirm_count);
-                readInt (sc, "heavy_max_duration_ms",   SceneCfg::heavy_max_duration_ms);
-                readInt (sc, "request_burst_slack_ms",  SceneCfg::request_burst_slack_ms);
-                readInt (sc, "burst_delta_thd",         SceneCfg::burst_delta_thd);
-                readInt (sc, "burst_min_load",          SceneCfg::burst_min_load);
-                readInt (sc, "am_switch_duration_ms",   SceneCfg::am_switch_duration_ms);
-                readInt (sc, "touch_duration_ms",       SceneCfg::touch_duration_ms);
-                readInt (sc, "load_sample_interval_ms", SceneCfg::load_sample_interval_ms);
-                readInt (sc, "screen_poll_interval_ms", SceneCfg::screen_poll_interval_ms);
-                readBool(sc, "touch_enable",            SceneCfg::touch_enable);
-                readInt (sc, "input_dev_max",           SceneCfg::input_dev_max);
-            } catch (...) {}
-
-            try {
                 auto& ap = F["AppProfile"];
                 readBool(ap, "enable", AppProfile::enable);
-            } catch (...) {}
-
-            try {
-                auto& nl = F["NetlinkScreen"];
-                readBool(nl, "enable",           NetlinkCfg::enable);
-                readInt (nl, "fallback_poll_ms", NetlinkCfg::fallback_poll_ms);
             } catch (...) {}
         } catch (const qlib::exception& e) {
             logger.Warn("Function 节点异常: %s", e.what());
@@ -563,7 +484,7 @@ private:
     void applyBaseModel() {
         baseModelIdx = -1;
         for (int i = 0; i < AppProfile::modelCount; i++) {
-            // qlib::string operator== 跨堆分配时有 UB，改用 strcmp 走 c_str()
+            // qlib::string operator== 已修为按内容比较；此处保守保留 strcmp（语义本就正确）
             const char* mn = AppProfile::Models[i].modeName.c_str();
             if (mn && strcmp(mn, mode.c_str()) == 0) {
                 baseModelIdx = i;
@@ -577,7 +498,7 @@ private:
         }
 
         const auto& m = AppProfile::Models[baseModelIdx];
-        for (int i = 0; i <= 3; i++) {
+        for (int i = 0; i < kClusterCount; i++) {
             Performances::MinFreq[i]     = m.MinFreq[i];
             Performances::MaxFreq[i]     = m.MaxFreq[i];
             Performances::CpuGovernor[i] = m.Governor[i];
@@ -591,24 +512,18 @@ private:
                             Performances::CpuGovernor[i].c_str());
             }
         }
-        for (int i = 0; i <= 7; i++)
+        for (int i = 0; i < kCoreCount; i++)
             Performances::Online[i] = m.Online[i];
 
-        for (int i = 0; i <= 3; i++) {
+        for (int i = 0; i < kClusterCount; i++) {
             int cnt = m.SchedParamCount[i];
-            for (int j = 0; j < cnt && j < 23; j++) {
-                // schedParam[].Name/Value 1-indexed（历史原因）
-                schedParam[i].Name [j+1] = m.SchedParamName [i][j];
-                schedParam[i].Value[j+1] = m.SchedParamValue[i][j];
+            for (int j = 0; j < cnt && j < kMaxSchedParams; j++) {
+                schedParam[i].Name [j] = m.SchedParamName [i][j];
+                schedParam[i].Value[j] = m.SchedParamValue[i][j];
             }
         }
         GpuFreq::min_freq = m.GpuMinFreq;
         GpuFreq::max_freq = m.GpuMaxFreq;
         logger.Info("基础模型: %s (mode=%s)", m.modelName.c_str(), mode.c_str());
-
-        try {
-            auto& sceneRoot = json["models"].array()[baseModelIdx]["Scenes"];
-            parseScenesNode(sceneRoot);
-        } catch (...) { logger.Debug("基础模型无 Scenes 节点"); }
     }
 };

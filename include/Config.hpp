@@ -15,101 +15,72 @@ using std::unordered_map;
 
 namespace Config {
 
+    // 拓扑/容量常量：CPU 簇数、核数、单簇调速器参数容量（与白名单 commonParams 条数一致）
+    inline constexpr int kClusterCount   = 4;
+    inline constexpr int kCoreCount      = 8;
+    inline constexpr int kMaxSchedParams = 16;
+
     namespace Meta {
-        string_t name;
-        int      version = -1;
-        string_t author;
-        string_t loglevel;
+        inline string_t name;
+        inline int      version = -1;
+        inline string_t author;
+        inline string_t loglevel;
     }
 
     namespace Policy {
-        int CpuPolicy[4] = { -1, -1, -1, -1 };
+        inline int CpuPolicy[kClusterCount] = { -1, -1, -1, -1 };
     }
 
     namespace Cpuset {
-        bool     enable = false;
-        string_t top_app;
-        string_t foreground;
-        string_t background;
-        string_t system_background;
-        string_t restricted;
+        inline bool     enable = false;
+        inline string_t top_app;
+        inline string_t foreground;
+        inline string_t background;
+        inline string_t system_background;
+        inline string_t restricted;
     }
 
     namespace LaunchBoost {
-        bool     enable = false;
-        int      boost_rate_limit_ms = 35;
-        string_t BoostFreq[4];
+        inline bool     enable = false;
+        inline int      boost_rate_limit_ms = 35;
+        inline string_t BoostFreq[kClusterCount];
     }
 
     namespace OfficialMode {
-        bool enable = false;
+        inline bool enable = false;
     }
 
     namespace Scheduler {
-        bool     enable = false;
-        bool     Sched_energy_aware = false;
-        bool     Sched_schedstats   = false;
-        string_t Sched_latency_ns;
-        string_t Sched_migration_cost_ns;
-        string_t Sched_min_granularity_ns;
-        string_t Sched_wakeup_granularity_ns;
-        string_t Sched_nr_migrate;
-        string_t Sched_util_clamp_min;
-        string_t Sched_util_clamp_max;
+        inline bool     enable = false;
+        inline bool     Sched_energy_aware = false;
+        inline bool     Sched_schedstats   = false;
+        inline string_t Sched_latency_ns;
+        inline string_t Sched_migration_cost_ns;
+        inline string_t Sched_min_granularity_ns;
+        inline string_t Sched_wakeup_granularity_ns;
+        inline string_t Sched_nr_migrate;
+        inline string_t Sched_util_clamp_min;
+        inline string_t Sched_util_clamp_max;
     }
 
     namespace GpuFreq {
-        bool     enable   = true;
-        string_t min_freq;
-        string_t max_freq;
+        inline bool     enable   = true;
+        inline string_t min_freq;
+        inline string_t max_freq;
         // 原子快照：配置加载完成时发布，gpuFreqGuard 每秒读它而非上面的 string（消除跨线程竞争）
-        std::atomic<int> min_mhz{0};
-        std::atomic<int> max_mhz{0};
-        std::atomic<int> enabled{1};
+        inline std::atomic<int> min_mhz{0};
+        inline std::atomic<int> max_mhz{0};
+        inline std::atomic<int> enabled{1};
     }
 
     namespace Performances {
-        int      Online[8]    = { -1, -1, -1, -1, -1, -1, -1, -1 };  // 默认 -1 跳过，不误关核心
-        string_t MinFreq[4];
-        string_t MaxFreq[4];
-        string_t CpuGovernor[4];
+        inline int      Online[kCoreCount]    = { -1, -1, -1, -1, -1, -1, -1, -1 };  // 默认 -1 跳过，不误关核心
+        inline string_t MinFreq[kClusterCount];
+        inline string_t MaxFreq[kClusterCount];
+        inline string_t CpuGovernor[kClusterCount];
     }
 
-    // 场景化频率：按场景覆盖 Performances，缺省字段继承基础值
-    namespace SceneFreq {
-        constexpr int SCENE_COUNT = 5;       // None / Touch / AmSwitch / HeavyLoad / Standby
-        string_t MinFreq [SCENE_COUNT][4];
-        string_t MaxFreq [SCENE_COUNT][4];
-        string_t Governor[SCENE_COUNT][4];
-        bool     enable = true;
-    }
-
-    namespace SceneCfg {
-        bool enable = true;
-
-        int heavy_load_thd        = 70;
-        int idle_load_thd         = 30;
-        int heavy_confirm_count   = 2;
-        int heavy_max_duration_ms = 3000;
-        int request_burst_slack_ms= 2000;
-
-        // 采样间负载跳变 > burst_delta_thd 且 curLoad >= burst_min_load → 类卡顿事件，触发 boost
-        int burst_delta_thd       = 30;
-        int burst_min_load        = 50;
-
-        int am_switch_duration_ms = 1500;
-        int touch_duration_ms     = 1000;
-
-        int load_sample_interval_ms = 2000;
-        int screen_poll_interval_ms = 3000;   // fallback 轮询间隔
-
-        // touch 事件极高频，默认关闭，避免频繁频率重写费电
-        bool touch_enable = false;
-
-        int input_dev_max = 16;
-    }
-
-    // 包名匹配支持 * 任意序列 / ? 单字符；优先级：AppProfile > SceneFreq > Performances
+    // 包名匹配支持 * 任意序列 / ? 单字符；优先级：AppProfile > Performances
     struct AppProfileModel {
         string_t modelName;
         string_t modeName;
@@ -119,38 +90,38 @@ namespace Config {
         string_t packages[32];
         int      packageCount = 0;
 
-        string_t MinFreq[4];
-        string_t MaxFreq[4];
-        string_t Governor[4];
+        string_t MinFreq[kClusterCount];
+        string_t MaxFreq[kClusterCount];
+        string_t Governor[kClusterCount];
         string_t GpuMinFreq;
         string_t GpuMaxFreq;
-        int      Online[8] = { -1, -1, -1, -1, -1, -1, -1, -1 };
+        int      Online[kCoreCount] = { -1, -1, -1, -1, -1, -1, -1, -1 };
 
-        string_t SchedParamName [4][16];
-        string_t SchedParamValue[4][16];
-        int      SchedParamCount[4] = { 0, 0, 0, 0 };
+        string_t SchedParamName [kClusterCount][kMaxSchedParams];
+        string_t SchedParamValue[kClusterCount][kMaxSchedParams];
+        int      SchedParamCount[kClusterCount] = { 0, 0, 0, 0 };
     };
 
     namespace AppProfile {
         static constexpr int MAX_MODELS    = 32;
         static constexpr int MAX_BLACKLIST = 64;
-        bool     enable = false;
+        inline bool     enable = false;
 
-        string_t        packageBlacklist[MAX_BLACKLIST];
-        int             blacklistCount = 0;
+        inline string_t        packageBlacklist[MAX_BLACKLIST];
+        inline int             blacklistCount = 0;
 
-        AppProfileModel Models[MAX_MODELS];
-        int             modelCount   = 0;
+        inline AppProfileModel Models[MAX_MODELS];
+        inline int             modelCount   = 0;
 
         // perapp_powermode.txt 覆盖层：优先级高于 config.json packages
         static constexpr int MAX_PERAPP = 256;
-        string_t perAppPkg[MAX_PERAPP];
-        string_t perAppModel[MAX_PERAPP];
-        int      perAppCount = 0;
-        string_t perAppGlobal;              // * 行全局默认，可空
+        inline string_t perAppPkg[MAX_PERAPP];
+        inline string_t perAppModel[MAX_PERAPP];
+        inline int      perAppCount = 0;
+        inline string_t perAppGlobal;              // * 行全局默认，可空
 
         // 多线程读、单线程写，必须 atomic
-        std::atomic<int> currentMatch{-1};
+        inline std::atomic<int> currentMatch{-1};
 
         // 迭代式通配符匹配，避免递归爆栈
         inline bool matchPackage(const char* pattern, const char* pkg) {
@@ -213,13 +184,9 @@ namespace Config {
         }
     }
 
-    namespace NetlinkCfg {
-        bool enable           = true;
-        int  fallback_poll_ms = 3000;
-    }
-
+    // 基础模式的调速器参数表，0-indexed，容量与 AppProfileModel::SchedParam* 一致
     struct SchedParam {
-        string_t Name [24];
-        string_t Value[24];
+        string_t Name [kMaxSchedParams];
+        string_t Value[kMaxSchedParams];
     };
 };

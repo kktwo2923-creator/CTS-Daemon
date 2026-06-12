@@ -91,7 +91,6 @@ public:
         if (fd >= 0) {
             write(fd, content.data(), content.size());
             close(fd);
-            chmod(filePath.c_str(), 0444);
         }
     }
 
@@ -174,7 +173,6 @@ public:
         auto len = FastSnprintf(tmp, sizeof(tmp), "%d", value);
         write(fd, tmp, len);
         close(fd);
-        chmod(path, 0444);
     }
 
     void popenShell(const char* cmd, char* buf, size_t buf_size) {
