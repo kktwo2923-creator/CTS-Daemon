@@ -47,6 +47,12 @@ private:
 
     std::string lastTopApp;          // 上一次前台应用包名（用于画像切换去重）
     long long   lastGameCpusetFixMs = 0;  // 游戏档 cpuset 矫正节流: 上次矫正时刻(ms), 防 ping-pong
+    long long   blacklistSinceMs    = 0;  // 黑名单前台开始停留时刻(ms), 0=当前前台不在黑名单
+
+    static long long nowMs() {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+    }
 
     // 缓存上一次写入的 (min,max,gov)，相同则跳过 sysfs 写，避免抖动场景重复刷盘
     string_t lastMinFreq[Config::kClusterCount];
@@ -607,8 +613,24 @@ public:
         std::string pkg = fresh ? utils.getTopApp() : utils.getTopAppCached(2500);
         if (pkg.empty() || pkg == "null") return;
 
-        // 黑名单前台（launcher/systemui/输入法等）只是临时覆盖，忽略以防误判离开游戏
-        if (Config::AppProfile::isBlacklisted(pkg.c_str())) return;
+        // 黑名单前台（launcher/systemui/输入法等）短时闪现 → 忽略，防误判离开游戏。
+        // [Fix] 但若持续停留（真退回桌面），必须退回基础档：否则游戏画像
+        //       (高 min + down_rate_limit=16000) 在桌面永久生效 → "CPU 锁 max 不降频"。
+        //       桌面上无 top-app 事件，由 appProfileTask 的 kPollIdleMs 空闲复查兜底再次进入此分支。
+        if (Config::AppProfile::isBlacklisted(pkg.c_str())) {
+            constexpr long long kBlacklistHoldMs = 2000;
+            long long t = nowMs();
+            if (blacklistSinceMs == 0) { blacklistSinceMs = t; return; }
+            if (t - blacklistSinceMs < kBlacklistHoldMs) return;
+            if (Config::AppProfile::currentMatch.load() >= 0) {
+                Config::AppProfile::currentMatch.store(-1);
+                lastTopApp.clear();   // 回到应用时能重新匹配画像
+                logger.Info("前台停留黑名单(%s)超过%lldms → 退回基础档", pkg.c_str(), kBlacklistHoldMs);
+                applyWithProfile();
+            }
+            return;
+        }
+        blacklistSinceMs = 0;
 
         if (pkg == lastTopApp) return;
 
