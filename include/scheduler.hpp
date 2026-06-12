@@ -611,21 +611,33 @@ public:
         std::string pkg = fresh ? utils.getTopApp() : utils.getTopAppCached(2500);
         if (pkg.empty() || pkg == "null") return;
 
-        // 黑名单前台（launcher/systemui/输入法等）短时闪现 → 忽略，防误判离开游戏。
-        // [Fix] 但若持续停留（真退回桌面），必须退回基础档：否则游戏画像
-        //       (高 min + down_rate_limit=16000) 在桌面永久生效 → "CPU 锁 max 不降频"。
-        //       桌面上无 top-app 事件，由 appProfileTask 的 kPollIdleMs 空闲复查兜底再次进入此分支。
+        // 黑名单前台（launcher/systemui/输入法等）。需区分两种情况：
+        //  ① 输入法/通知栏等覆盖在游戏/保活画像上、原 App 仍可见 → 保活，永不退档；
+        //  ② 真离开（回桌面，原 App 已不可见）或普通画像 → 短去抖后退回基础档，
+        //     否则游戏画像(高 min + down_rate_limit) 永久生效 → "CPU 锁 max 不降频"。
+        //  桌面无 top-app 事件，由 appProfileTask 的自适应空闲复查兜底再次进入此分支。
         if (Config::AppProfile::isBlacklisted(pkg.c_str())) {
-            constexpr long long kBlacklistHoldMs = 2000;
+            constexpr long long kBlacklistHoldMs = 800;
+            int cm = Config::AppProfile::currentMatch.load();
+            bool keepAlive = (cm >= 0 && cm < Config::AppProfile::modelCount &&
+                              (Config::AppProfile::Models[cm].isGame ||
+                               Config::AppProfile::Models[cm].keepAlive));
+            if (keepAlive && !lastTopApp.empty() &&
+                (utils.isPackageInTopApp(lastTopApp.c_str()) ||
+                 utils.isPackageVisible(lastTopApp.c_str()))) {
+                blacklistSinceMs = 0;   // 原 App 仍可见 → 保活
+                return;
+            }
             long long t = nowMs();
             if (blacklistSinceMs == 0) { blacklistSinceMs = t; return; }
             if (t - blacklistSinceMs < kBlacklistHoldMs) return;
-            if (Config::AppProfile::currentMatch.load() >= 0) {
+            if (cm >= 0) {
                 Config::AppProfile::currentMatch.store(-1);
                 lastTopApp.clear();   // 回到应用时能重新匹配画像
-                logger.Info("前台停留黑名单(%s)超过%lldms → 退回基础档", pkg.c_str(), kBlacklistHoldMs);
+                logger.Info("前台停留黑名单(%s)且原画像已离开 → 退回基础档", pkg.c_str());
                 applyWithProfile();
             }
+            blacklistSinceMs = 0;
             return;
         }
         blacklistSinceMs = 0;
@@ -690,10 +702,12 @@ public:
         evalForegroundOnce(true);
 
         while (!shouldExit_.load()) {
-            int ev = waitTopAppEvent(fd, wd, kPollIdleMs);
+            // 有待退档判定(blacklistSinceMs 计时中)时快轮询，让回桌面更跟手；平时维持 4s 省电
+            int idleMs = (blacklistSinceMs != 0) ? 500 : kPollIdleMs;
+            int ev = waitTopAppEvent(fd, wd, idleMs);
             if (shouldExit_.load()) break;
             if (ev < 0) {
-                if (waitStop(kPollIdleMs)) break;
+                if (waitStop(idleMs)) break;
                 evalForegroundOnce(true);
                 correctGameTopAppCpus();
                 continue;
