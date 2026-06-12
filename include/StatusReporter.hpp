@@ -8,6 +8,9 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <chrono>
+#include <mutex>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -30,11 +33,14 @@ private:
 
     std::atomic<bool> running_{true};
     std::thread th_;
+    std::mutex mtx_;
+    std::condition_variable cv_;
     int cellCount_;             // 1 单芯 / 2 双芯串联
     std::vector<int> policies_; // 动态发现的 policy 列表
+    std::vector<std::string> curFreqPaths_, govPaths_;  // 预生成,避免每秒重复拼串
 
-    static long readLong(const std::string& path) {
-        int fd = open(path.c_str(), O_RDONLY);
+    static long readLong(const char* path) {
+        int fd = open(path, O_RDONLY);
         if (fd < 0) return LONG_MIN;
         char buf[32] = {0};
         ssize_t n = read(fd, buf, sizeof(buf) - 1);
@@ -43,8 +49,8 @@ private:
         return atol(buf);
     }
 
-    static std::string readStr(const std::string& path) {
-        int fd = open(path.c_str(), O_RDONLY);
+    static std::string readStr(const char* path) {
+        int fd = open(path, O_RDONLY);
         if (fd < 0) return "";
         char buf[64] = {0};
         ssize_t n = read(fd, buf, sizeof(buf) - 1);
@@ -73,8 +79,8 @@ private:
     }
 
     double computeWatt() const {
-        long i = readLong(std::string(BATT) + "/current_now");
-        long v = readLong(std::string(BATT) + "/voltage_now");
+        long i = readLong("/sys/class/power_supply/battery/current_now");
+        long v = readLong("/sys/class/power_supply/battery/voltage_now");
         if (i == LONG_MIN || v == LONG_MIN) return 0.0;
         long absI = labs(i), absV = labs(v);
         double currentMa = (absI > 100000) ? absI / 1000.0 : (double)absI;  // µA→mA
@@ -84,7 +90,7 @@ private:
     }
 
     bool isCharging() const {
-        std::string s = readStr(std::string(BATT) + "/status");
+        std::string s = readStr("/sys/class/power_supply/battery/status");
         return s == "Charging" || s == "Full";
     }
 
@@ -104,62 +110,63 @@ private:
         return -1;
     }
 
-    std::string buildJson() const {
+    // 栈缓冲拼 JSON，消除每秒 ~10 次堆分配
+    int buildJson(char* out, size_t cap) const {
         double watt = computeWatt();
         bool chg = isCharging();
-        int batt = (int)readLong(std::string(BATT) + "/capacity");
+        int batt = (int)readLong("/sys/class/power_supply/battery/capacity");
         if (batt < 0) batt = -1;
         int gpu = gpuMhz();
 
-        std::string j = "{";
-        char tmp[128];
-        snprintf(tmp, sizeof(tmp), "\"ts\":%ld,", (long)time(nullptr));
-        j += tmp;
-        snprintf(tmp, sizeof(tmp), "\"watt\":%.3f,", watt);
-        j += tmp;
-        j += std::string("\"charging\":") + (chg ? "true" : "false") + ",";
-        snprintf(tmp, sizeof(tmp), "\"batt_pct\":%d,", batt);
-        j += tmp;
-        snprintf(tmp, sizeof(tmp), "\"gpu_mhz\":%d,", gpu);
-        j += tmp;
+        int len = snprintf(out, cap,
+            "{\"ts\":%ld,\"watt\":%.3f,\"charging\":%s,\"batt_pct\":%d,\"gpu_mhz\":%d,\"clusters\":[",
+            (long)time(nullptr), watt, chg ? "true" : "false", batt, gpu);
 
-        j += "\"clusters\":[";
-        for (size_t k = 0; k < policies_.size(); ++k) {
-            int p = policies_[k];
-            long curK = readLong(std::string(CPUFREQ) + "/policy" + std::to_string(p) + "/scaling_cur_freq");
+        for (size_t k = 0; k < policies_.size() && len < (int)cap - 1; ++k) {
+            long curK = readLong(curFreqPaths_[k].c_str());
             int curMhz = (curK > 0) ? (int)(curK / 1000) : -1;
-            std::string gov = readStr(std::string(CPUFREQ) + "/policy" + std::to_string(p) + "/scaling_governor");
-            if (k) j += ",";
-            snprintf(tmp, sizeof(tmp), "{\"policy\":%d,\"cur_mhz\":%d,\"gov\":\"", p, curMhz);
-            j += tmp;
-            j += gov;
-            j += "\"}";
+            std::string gov = readStr(govPaths_[k].c_str());
+            len += snprintf(out + len, cap - len, "%s{\"policy\":%d,\"cur_mhz\":%d,\"gov\":\"%s\"}",
+                            k ? "," : "", policies_[k], curMhz, gov.c_str());
         }
-        j += "]}";
-        return j;
+        if (len < (int)cap - 2) len += snprintf(out + len, cap - len, "]}");
+        if (len > (int)cap - 1) len = (int)cap - 1;
+        return len;
     }
 
-    static void atomicWrite(const char* path, const std::string& content) {
+    static void atomicWrite(const char* path, const char* data, size_t len) {
         // 写临时文件再 rename，防止 App 读到半截 JSON
-        std::string tmp = std::string(path) + ".tmp";
-        int fd = open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        char tmp[128];
+        snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+        int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
         if (fd < 0) return;
-        ssize_t n = write(fd, content.data(), content.size());
+        ssize_t n = write(fd, data, len);
         (void)n;
         close(fd);
-        rename(tmp.c_str(), path);
+        rename(tmp, path);
     }
 
     void loop() {
         mkdir(CTS_DIR, 0755);
         policies_ = discoverPolicies();
+        for (int p : policies_) {
+            std::string base = std::string(CPUFREQ) + "/policy" + std::to_string(p);
+            curFreqPaths_.push_back(base + "/scaling_cur_freq");
+            govPaths_.push_back(base + "/scaling_governor");
+        }
+        char json[4096];
+        std::unique_lock<std::mutex> lk(mtx_);
         while (running_.load(std::memory_order_relaxed)) {
+            lk.unlock();
             char hb[32];
-            snprintf(hb, sizeof(hb), "%ld\n", (long)time(nullptr));
-            atomicWrite(ALIVE, hb);
-            atomicWrite(STATUS, buildJson());
-            for (int s = 0; s < 10 && running_.load(std::memory_order_relaxed); ++s)
-                usleep(100 * 1000);
+            int hlen = snprintf(hb, sizeof(hb), "%ld\n", (long)time(nullptr));
+            atomicWrite(ALIVE, hb, hlen);
+            int jlen = buildJson(json, sizeof(json));
+            atomicWrite(STATUS, json, jlen);
+            lk.lock();
+            // 单次 1s 等待替代 10×100ms 唤醒；stop() 通过 cv 即刻唤醒
+            cv_.wait_for(lk, std::chrono::seconds(1),
+                         [this] { return !running_.load(std::memory_order_relaxed); });
         }
     }
 
@@ -171,7 +178,11 @@ public:
     }
 
     void stop() {
-        running_.store(false, std::memory_order_relaxed);
+        {
+            std::lock_guard<std::mutex> lk(mtx_);
+            running_.store(false, std::memory_order_relaxed);
+        }
+        cv_.notify_all();
         if (th_.joinable()) th_.join();
         unlink(ALIVE);
     }

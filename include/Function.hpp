@@ -5,6 +5,8 @@
 #include <atomic>
 #include <thread>
 #include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <cstdlib>
 #include <unistd.h>
 #include <fcntl.h>
@@ -37,6 +39,21 @@ private:
     Logger logger;
 
     std::thread gpuGuardThread;
+    std::mutex guardMtx_;
+    std::condition_variable guardCv_;
+
+    // GPU 写路径缓存：命中后跳过整条探测级联(opendir+多次access)，节点失效自动回退重探
+    struct GpuPathCache { char path[128] = {0}; bool isHz = false; bool needsGov = false; bool valid = false; };
+    GpuPathCache gpuMinCache_, gpuMaxCache_;
+    std::mutex gpuPathMtx_;
+
+    // kgsl 可用频点表硬件固定，探测一次后缓存
+    int kgslAvailFreqs_[64];
+    int kgslAvailCount_ = -1;
+
+    // 回读 min 频率的有效节点缓存
+    const char* gpuMinReadPath_ = nullptr;
+    bool gpuMinReadIsMhz_ = false;
 
 public:
     Function() = default;
@@ -75,7 +92,11 @@ public:
     }
 
     void stopGuards() {
-        gpuGuardShouldExit.store(true);
+        {
+            std::lock_guard<std::mutex> lk(guardMtx_);
+            gpuGuardShouldExit.store(true);
+        }
+        guardCv_.notify_all();
 
         if (gpuGuardThread.joinable()) {
             gpuGuardThread.join();
@@ -279,11 +300,11 @@ public:
         }
 
         if (isHz && strstr(path, "kgsl")) {
-            int availFreqs[64];
-            int availCount = readKgslAvailableFreqs(availFreqs);
+            if (kgslAvailCount_ < 0) kgslAvailCount_ = readKgslAvailableFreqs(kgslAvailFreqs_);
+            int availCount = kgslAvailCount_;
 
             if (availCount > 0) {
-                int snapped = snapGpuFreq(valueToWrite, availFreqs, availCount, isMax);
+                int snapped = snapGpuFreq(valueToWrite, kgslAvailFreqs_, availCount, isMax);
 
                 if (snapped != valueToWrite) {
                     logger.Debug("GPU频率校准: %d -> %d, path=%s", valueToWrite, snapped, path);
@@ -324,46 +345,64 @@ public:
         return found;
     }
 
+    // 写成功则记入缓存，后续直写该节点
+    bool tryGpuPathCache(GpuPathCache& c, const char* path, int mhz,
+                         bool isHz, bool needsGov, const char* label) {
+        if (!tryGpuPath(path, mhz, isHz, needsGov, label)) return false;
+        snprintf(c.path, sizeof(c.path), "%s", path);
+        c.isHz = isHz;
+        c.needsGov = needsGov;
+        c.valid = true;
+        return true;
+    }
+
     bool tryGpuMaxPaths(int mhzMax) {
         if (mhzMax <= 0) return true;
+        std::lock_guard<std::mutex> lk(gpuPathMtx_);
+
+        if (gpuMaxCache_.valid) {
+            if (tryGpuPath(gpuMaxCache_.path, mhzMax, gpuMaxCache_.isHz, gpuMaxCache_.needsGov, "max"))
+                return true;
+            gpuMaxCache_.valid = false; // 节点失效，重走级联探测
+        }
 
         // 联发科 Mali：动态探测前缀，再固定地址兜底
         {
             char maliPath[128];
             if (findMaliDevfreqPath("max_freq", maliPath, sizeof(maliPath)) &&
-                tryGpuPath(maliPath, mhzMax, true, false, "max"))
+                tryGpuPathCache(gpuMaxCache_, maliPath, mhzMax, true, false, "max"))
                 return true;
         }
-        if (tryGpuPath("/sys/class/devfreq/13000000.mali/max_freq", mhzMax, true, false, "max"))
+        if (tryGpuPathCache(gpuMaxCache_, "/sys/class/devfreq/13000000.mali/max_freq", mhzMax, true, false, "max"))
             return true;
-        if (tryGpuPath("/sys/class/devfreq/13040000.mali/max_freq", mhzMax, true, false, "max"))
+        if (tryGpuPathCache(gpuMaxCache_, "/sys/class/devfreq/13040000.mali/max_freq", mhzMax, true, false, "max"))
             return true;
 
         // SM8850+ 新内核 devfreq 挂载在 /sys/class/devfreq/<addr>.qcom,kgsl-3d0/，旧软链可能不存在
-        if (tryGpuPath("/sys/class/devfreq/3d00000.qcom,kgsl-3d0/max_freq",
+        if (tryGpuPathCache(gpuMaxCache_, "/sys/class/devfreq/3d00000.qcom,kgsl-3d0/max_freq",
                        mhzMax, true, true, "max"))
             return true;
-        if (tryGpuPath("/sys/class/devfreq/5000000.qcom,kgsl-3d0/max_freq",
+        if (tryGpuPathCache(gpuMaxCache_, "/sys/class/devfreq/5000000.qcom,kgsl-3d0/max_freq",
                        mhzMax, true, true, "max"))
             return true;
         // 骁龙855/SM8150=2c00000, 骁龙800/801=fdb00000
-        if (tryGpuPath("/sys/class/devfreq/2c00000.qcom,kgsl-3d0/max_freq",
+        if (tryGpuPathCache(gpuMaxCache_, "/sys/class/devfreq/2c00000.qcom,kgsl-3d0/max_freq",
                        mhzMax, true, true, "max"))
             return true;
-        if (tryGpuPath("/sys/class/devfreq/fdb00000.qcom,kgsl-3d0/max_freq",
+        if (tryGpuPathCache(gpuMaxCache_, "/sys/class/devfreq/fdb00000.qcom,kgsl-3d0/max_freq",
                        mhzMax, true, true, "max"))
             return true;
 
-        if (tryGpuPath("/sys/kernel/gpu/gpu_max_clock", mhzMax, false, false, "max"))
+        if (tryGpuPathCache(gpuMaxCache_, "/sys/kernel/gpu/gpu_max_clock", mhzMax, false, false, "max"))
             return true;
 
-        if (tryGpuPath("/sys/class/kgsl/kgsl-3d0/devfreq/max_freq", mhzMax, true, true, "max"))
+        if (tryGpuPathCache(gpuMaxCache_, "/sys/class/kgsl/kgsl-3d0/devfreq/max_freq", mhzMax, true, true, "max"))
             return true;
 
-        if (tryGpuPath("/sys/class/kgsl/kgsl-3d0/max_gpuclk", mhzMax, true, false, "max"))
+        if (tryGpuPathCache(gpuMaxCache_, "/sys/class/kgsl/kgsl-3d0/max_gpuclk", mhzMax, true, false, "max"))
             return true;
 
-        if (tryGpuPath("/sys/class/kgsl/kgsl-3d0/max_clock_mhz", mhzMax, false, false, "max"))
+        if (tryGpuPathCache(gpuMaxCache_, "/sys/class/kgsl/kgsl-3d0/max_clock_mhz", mhzMax, false, false, "max"))
             return true;
 
         return false;
@@ -371,39 +410,46 @@ public:
 
     bool tryGpuMinPaths(int mhzMin) {
         if (mhzMin <= 0) return true;
+        std::lock_guard<std::mutex> lk(gpuPathMtx_);
+
+        if (gpuMinCache_.valid) {
+            if (tryGpuPath(gpuMinCache_.path, mhzMin, gpuMinCache_.isHz, gpuMinCache_.needsGov, "min"))
+                return true;
+            gpuMinCache_.valid = false;
+        }
 
         {
             char maliPath[128];
             if (findMaliDevfreqPath("min_freq", maliPath, sizeof(maliPath)) &&
-                tryGpuPath(maliPath, mhzMin, true, false, "min"))
+                tryGpuPathCache(gpuMinCache_, maliPath, mhzMin, true, false, "min"))
                 return true;
         }
-        if (tryGpuPath("/sys/class/devfreq/13000000.mali/min_freq", mhzMin, true, false, "min"))
+        if (tryGpuPathCache(gpuMinCache_, "/sys/class/devfreq/13000000.mali/min_freq", mhzMin, true, false, "min"))
             return true;
-        if (tryGpuPath("/sys/class/devfreq/13040000.mali/min_freq", mhzMin, true, false, "min"))
+        if (tryGpuPathCache(gpuMinCache_, "/sys/class/devfreq/13040000.mali/min_freq", mhzMin, true, false, "min"))
             return true;
 
-        if (tryGpuPath("/sys/class/devfreq/3d00000.qcom,kgsl-3d0/min_freq",
+        if (tryGpuPathCache(gpuMinCache_, "/sys/class/devfreq/3d00000.qcom,kgsl-3d0/min_freq",
                        mhzMin, true, true, "min"))
             return true;
-        if (tryGpuPath("/sys/class/devfreq/5000000.qcom,kgsl-3d0/min_freq",
+        if (tryGpuPathCache(gpuMinCache_, "/sys/class/devfreq/5000000.qcom,kgsl-3d0/min_freq",
                        mhzMin, true, true, "min"))
             return true;
         // 骁龙855/SM8150=2c00000, 骁龙800/801=fdb00000
-        if (tryGpuPath("/sys/class/devfreq/2c00000.qcom,kgsl-3d0/min_freq",
+        if (tryGpuPathCache(gpuMinCache_, "/sys/class/devfreq/2c00000.qcom,kgsl-3d0/min_freq",
                        mhzMin, true, true, "min"))
             return true;
-        if (tryGpuPath("/sys/class/devfreq/fdb00000.qcom,kgsl-3d0/min_freq",
+        if (tryGpuPathCache(gpuMinCache_, "/sys/class/devfreq/fdb00000.qcom,kgsl-3d0/min_freq",
                        mhzMin, true, true, "min"))
             return true;
 
-        if (tryGpuPath("/sys/kernel/gpu/gpu_min_clock", mhzMin, false, false, "min"))
+        if (tryGpuPathCache(gpuMinCache_, "/sys/kernel/gpu/gpu_min_clock", mhzMin, false, false, "min"))
             return true;
 
-        if (tryGpuPath("/sys/class/kgsl/kgsl-3d0/devfreq/min_freq", mhzMin, true, true, "min"))
+        if (tryGpuPathCache(gpuMinCache_, "/sys/class/kgsl/kgsl-3d0/devfreq/min_freq", mhzMin, true, true, "min"))
             return true;
 
-        if (tryGpuPath("/sys/class/kgsl/kgsl-3d0/min_clock_mhz", mhzMin, false, false, "min"))
+        if (tryGpuPathCache(gpuMinCache_, "/sys/class/kgsl/kgsl-3d0/min_clock_mhz", mhzMin, false, false, "min"))
             return true;
 
         return false;
@@ -582,8 +628,15 @@ public:
     // 回读当前 GPU 最低频(MHz)。OnePlus 等 ROM 的 GPU 管理会周期性覆盖 min,
     // 守护据此判断是否被改动并立即纠正。读不到返回 -1。
     int readCurrentGpuMinMhz() {
-        int v = utils.readInt("/sys/class/kgsl/kgsl-3d0/min_clock_mhz");  // 高通 kgsl, MHz
-        if (v > 0) return v;
+        // 缓存有效节点：稳态每次回读只 open 一个节点，不重复探测 4 条路径
+        if (gpuMinReadPath_) {
+            int v = utils.readInt(gpuMinReadPath_);
+            if (v > 0) return gpuMinReadIsMhz_ ? v : v / 1000000;
+            gpuMinReadPath_ = nullptr;
+        }
+        static constexpr const char* mhzPath = "/sys/class/kgsl/kgsl-3d0/min_clock_mhz"; // 高通 kgsl, MHz
+        int v = utils.readInt(mhzPath);
+        if (v > 0) { gpuMinReadPath_ = mhzPath; gpuMinReadIsMhz_ = true; return v; }
         static const char* hzPaths[] = {
             "/sys/class/devfreq/3d00000.qcom,kgsl-3d0/min_freq",
             "/sys/class/devfreq/5000000.qcom,kgsl-3d0/min_freq",
@@ -591,7 +644,7 @@ public:
         };
         for (auto p : hzPaths) {
             v = utils.readInt(p);
-            if (v > 0) return v / 1000000;  // Hz -> MHz
+            if (v > 0) { gpuMinReadPath_ = p; gpuMinReadIsMhz_ = false; return v / 1000000; } // Hz -> MHz
         }
         return -1;
     }
@@ -621,42 +674,64 @@ public:
     void gpuFreqGuard() {
         if (!GpuFreq::enable) return;
 
-        logger.Info("GPU守护已启动，周期: 1秒(回读纠正)");
+        // 自适应轮询：1s 快轮询防御 ROM(风驰/perfd)覆盖；连续 kStableN 次回读无漂移则
+        // 退避一级(+1s, 上限 3s)；检测到漂移/目标变化立即恢复 1s。兜底强制重写仍按 ~10s。
+        constexpr int kFastMs  = 1000;
+        constexpr int kMaxMs   = 3000;
+        constexpr int kStableN = 5;
+        constexpr int kForceMs = 10000;
+
+        logger.Info("GPU守护已启动: 1秒回读纠正, 稳定后退避至 %d 秒", kMaxMs / 1000);
 
         int lastTargetMin = -1;
         int lastTargetMax = -1;
-        int forceCounter  = 0;
+        int intervalMs    = kFastMs;
+        int stableCount   = 0;
+        int sinceForceMs  = 0;
 
+        std::unique_lock<std::mutex> lk(guardMtx_);
         while (!gpuGuardShouldExit.load()) {
+            lk.unlock();
             int mhzMin = Fastatoi(GpuFreq::min_freq.c_str());
             int mhzMax = Fastatoi(GpuFreq::max_freq.c_str());
 
             if (mhzMin <= 0 && mhzMax <= 0) {
-                for (int i = 0; i < 10 && !gpuGuardShouldExit.load(); i++) {
-                    utils.sleep_ms(100);
+                intervalMs   = kFastMs;
+                stableCount  = 0;
+                sinceForceMs = 0;
+            } else {
+                bool targetChanged = (mhzMin != lastTargetMin) || (mhzMax != lastTargetMax);
+                // 回读真实 min: 被 ROM 改回则立刻纠正
+                bool drifted = false;
+                if (mhzMin > 0) {
+                    int cur = readCurrentGpuMinMhz();
+                    if (cur > 0 && cur != mhzMin) drifted = true;
                 }
-                continue;
+                sinceForceMs += intervalMs;
+                bool force = (sinceForceMs >= kForceMs);  // ~10s 兜底强制一次
+
+                if (targetChanged || drifted || force) {
+                    applyGpuFreqOnce(mhzMin, mhzMax);
+                    lastTargetMin = mhzMin;
+                    lastTargetMax = mhzMax;
+                    if (force) sinceForceMs = 0;
+                }
+
+                if (targetChanged || drifted) {
+                    if (drifted && intervalMs != kFastMs)
+                        logger.Debug("GPU min 漂移(被系统覆盖), 恢复 1s 快轮询");
+                    intervalMs  = kFastMs;
+                    stableCount = 0;
+                } else if (intervalMs < kMaxMs && ++stableCount >= kStableN) {
+                    intervalMs  = (intervalMs + kFastMs > kMaxMs) ? kMaxMs : intervalMs + kFastMs;
+                    stableCount = 0;
+                }
             }
 
-            bool targetChanged = (mhzMin != lastTargetMin) || (mhzMax != lastTargetMax);
-            // 回读真实 min: 被 ROM(风驰/perfd)改回则立刻纠正
-            bool drifted = false;
-            if (mhzMin > 0) {
-                int cur = readCurrentGpuMinMhz();
-                if (cur > 0 && cur != mhzMin) drifted = true;
-            }
-            bool force = (++forceCounter >= 10);  // ~10s 兜底强制一次
-            if (force) forceCounter = 0;
-
-            if (targetChanged || drifted || force) {
-                applyGpuFreqOnce(mhzMin, mhzMax);
-                lastTargetMin = mhzMin;
-                lastTargetMax = mhzMax;
-            }
-
-            for (int i = 0; i < 10 && !gpuGuardShouldExit.load(); i++) {
-                utils.sleep_ms(100);
-            }
+            lk.lock();
+            // 单次定时等待替代 10×100ms 碎片睡眠，唤醒数 10/s → ≤1/s；退出时被 notify 即刻返回
+            guardCv_.wait_for(lk, std::chrono::milliseconds(intervalMs),
+                              [this] { return gpuGuardShouldExit.load(); });
         }
 
         logger.Info("GPU守护已停止");

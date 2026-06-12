@@ -4,6 +4,7 @@
 #include "Function.hpp"
 #include "SceneDetector.hpp"
 #include <sys/inotify.h>
+#include <sys/resource.h>
 #include <sched.h>
 #include <linux/limits.h>
 #include <sys/stat.h>
@@ -50,10 +51,8 @@ public:
     Schedule() {
         pinSelfToLittleCores();   // 必须在创建工作线程前设主线程亲和性，新线程继承之
         Init();
-        threads.emplace_back(thread(&Schedule::configTriggerTask, this));
-        threads.emplace_back(thread(&Schedule::jsonTriggerTask, this));
-        threads.emplace_back(thread(&Schedule::perappTriggerTask, this));
-        threads.emplace_back(thread(&Schedule::cpuSetTriggerTask, this));
+        // 单 inotify 线程监控三个配置文件，替代原 config/json/perapp 三线程
+        threads.emplace_back(thread(&Schedule::fileWatchTask, this));
 
         if (Config::AppProfile::enable) {
             threads.emplace_back(thread(&Schedule::appProfileTask, this));
@@ -65,7 +64,8 @@ public:
         return strcmp(a.c_str(), b.c_str()) == 0;
     }
 
-    void FreqWriter(const int Policy, const string_t MinFreq, const string_t MaxFreq, const string_t Governor) {
+    // 传引用避免每次调用 3 个 string_t 堆拷贝
+    void FreqWriter(const int Policy, const string_t& MinFreq, const string_t& MaxFreq, const string_t& Governor) {
         std::lock_guard<std::mutex> lock(mtx);
         int cluster = -1;
         for (int i = 0; i <= 3; i++) {
@@ -381,21 +381,12 @@ public:
         function.gpuFreqControl();
     }
 
-    // 监控 perapp_powermode.txt 变化，重载后立即对当前前台重算画像
-    void perappTriggerTask() {
-        sleep(2);
-        const char* watchDir = "/sdcard/Android/CTS";
-        const char* targetFile = "perapp_powermode.txt";
-        while (true) {
-            if (!watchFileInDir(watchDir, targetFile, IN_CLOSE_WRITE)) {
-                sleep(5); continue;
-            }
-            conf.loadPerApp();
-            // perapp 改变后包名不变但画像可能变，必须强制重算（绕过 pkg==lastTopApp 去重）
-            logger.Info("perapp_powermode.txt 已重载 (%d 条映射), 重算当前前台画像",
-                        Config::AppProfile::perAppCount);
-            forceReevalForeground();
-        }
+    // perapp 改变后包名不变但画像可能变，必须强制重算（绕过 pkg==lastTopApp 去重）
+    void onPerappChanged() {
+        conf.loadPerApp();
+        logger.Info("perapp_powermode.txt 已重载 (%d 条映射), 重算当前前台画像",
+                    Config::AppProfile::perAppCount);
+        forceReevalForeground();
     }
 
     void forceReevalForeground() {
@@ -416,100 +407,78 @@ public:
         return std::hash<std::string>{}(data);
     }
 
-    void configTriggerTask() {
-        sleep(2);
-        const char* watchDir = "/sdcard/Android/CTS";
-        const char* targetFile = "mode.txt";
-        const char* modeFilePath = "/sdcard/Android/CTS/mode.txt";
-        size_t lastHash = 0;
-        while (true) {
-            if (!watchFileInDir(watchDir, targetFile, IN_CLOSE_WRITE)) {
-                sleep(5); continue;
-            }
-            size_t h = fileContentHash(modeFilePath);
-            if (h != 0 && h == lastHash) {
-                logger.Debug("mode.txt 内容未变,跳过重载");
-                continue;
-            }
-            if (conf.readConfig()) {
-                applyAllConfig();
-                lastHash = h;
-            } else {
-                logger.Warn("配置重载失败，跳过应用");
-            }
+    void onModeChanged(size_t& lastHash) {
+        size_t h = fileContentHash(configPath);
+        if (h != 0 && h == lastHash) {
+            logger.Debug("mode.txt 内容未变,跳过重载");
+            return;
+        }
+        if (conf.readConfig()) {
+            applyAllConfig();
+            lastHash = h;
+        } else {
+            logger.Warn("配置重载失败，跳过应用");
         }
     }
 
-    void jsonTriggerTask() {
-        sleep(2);
-        const char* watchDir = "/sdcard/Android/CTS";
-        const char* targetFile = "config.json";
-        const char* jsonFilePath = "/sdcard/Android/CTS/config.json";
-        size_t lastHash = 0;
-        while (true) {
-            if (!watchFileInDir(watchDir, targetFile, IN_CLOSE_WRITE)) {
-                sleep(5); continue;
-            }
-            size_t h = fileContentHash(jsonFilePath);
-            if (h != 0 && h == lastHash) {
-                logger.Debug("config.json 内容未变,跳过重载");
-                continue;
-            }
-            if (conf.readConfig()) {
-                function.ReloadFunC();
-                applyAllConfig();
-                lastHash = h;
-            } else {
-                logger.Warn("JSON 配置重载失败，跳过应用");
-            }
+    void onJsonChanged(size_t& lastHash) {
+        size_t h = fileContentHash(jsonPath);
+        if (h != 0 && h == lastHash) {
+            logger.Debug("config.json 内容未变,跳过重载");
+            return;
+        }
+        if (conf.readConfig()) {
+            function.ReloadFunC();
+            applyAllConfig();
+            lastHash = h;
+        } else {
+            logger.Warn("JSON 配置重载失败，跳过应用");
         }
     }
 
+    // 单 inotify 实例 + 阻塞 read 监控目录下三个配置文件（合并原三线程，消除 5s select 定时唤醒）
     // /sdcard/ 是 FUSE，inotify 不能监控文件，只能监控目录再过滤文件名
-    bool watchFileInDir(const char* dirPath, const char* targetFile, uint32_t mask) {
-        int fd = inotify_init();
-        if (fd < 0) {
-            logger.Error("inotify_init 失败: %s", strerror(errno));
-            return false;
-        }
-        int wd = inotify_add_watch(fd, dirPath, mask | IN_MOVED_TO);
-        if (wd < 0) {
-            logger.Error("inotify_add_watch 失败 %s: %s", dirPath, strerror(errno));
-            close(fd);
-            return false;
-        }
-
-        constexpr int buflen = sizeof(struct inotify_event) + NAME_MAX + 1;
-        char buf[buflen];
-        fd_set readfds;
-        bool triggered = false;
-        while (!triggered) {
-            FD_ZERO(&readfds);
-            FD_SET(fd, &readfds);
-            struct timeval tv = {5, 0}; // 5s timeout to re-create watch
-            int ret = select(fd + 1, &readfds, nullptr, nullptr, &tv);
-            if (ret < 0) {
-                if (errno == EINTR) continue;
-                break;
+    void fileWatchTask() {
+        sleep(2);
+        const char* watchDir = "/sdcard/Android/CTS";
+        size_t lastModeHash = 0, lastJsonHash = 0;
+        while (true) {
+            int fd = inotify_init1(IN_CLOEXEC);
+            if (fd < 0) {
+                logger.Error("inotify_init 失败: %s", strerror(errno));
+                sleep(5);
+                continue;
             }
-            if (ret == 0) continue; // timeout, re-create watch
-            int len = read(fd, buf, buflen);
-            if (len < 0) break;
-            for (char* ptr = buf; ptr < buf + len; ) {
-                struct inotify_event* ev = reinterpret_cast<struct inotify_event*>(ptr);
-                if (ev->len > 0 && strcmp(ev->name, targetFile) == 0) {
-                    triggered = true; break;
+            int wd = inotify_add_watch(fd, watchDir, IN_CLOSE_WRITE | IN_MOVED_TO);
+            if (wd < 0) {
+                logger.Error("inotify_add_watch 失败 %s: %s", watchDir, strerror(errno));
+                close(fd);
+                sleep(5);
+                continue;
+            }
+
+            bool alive = true;
+            alignas(struct inotify_event) char buf[4096];
+            while (alive) {
+                ssize_t len = read(fd, buf, sizeof(buf));  // 阻塞等事件，无定时唤醒
+                if (len <= 0) {
+                    if (len < 0 && errno == EINTR) continue;
+                    alive = false;
+                    break;
                 }
-                ptr += sizeof(struct inotify_event) + ev->len;
+                for (char* ptr = buf; ptr < buf + len; ) {
+                    auto* ev = reinterpret_cast<struct inotify_event*>(ptr);
+                    ptr += sizeof(struct inotify_event) + ev->len;
+                    if (ev->mask & (IN_IGNORED | IN_UNMOUNT)) { alive = false; continue; } // watch 失效，重建
+                    if (ev->len == 0) continue;
+                    if      (strcmp(ev->name, "mode.txt") == 0)             onModeChanged(lastModeHash);
+                    else if (strcmp(ev->name, "config.json") == 0)          onJsonChanged(lastJsonHash);
+                    else if (strcmp(ev->name, "perapp_powermode.txt") == 0) onPerappChanged();
+                }
             }
+            inotify_rm_watch(fd, wd);
+            close(fd);
         }
-        inotify_rm_watch(fd, wd);
-        close(fd);
-        return triggered;
-    }
-
-    void cpuSetTriggerTask() {
-        return;
     }
 
     // 阻塞等待 top-app cpuset 变动事件（前台切换会改写该 cgroup），超时返回 0，inotify 失败返回 -1
@@ -541,6 +510,8 @@ public:
             logger.Info("守护进程已绑定低位核 0-3(避开超大核 6-7), 不抢占前台游戏");
         else
             logger.Debug("绑定低位核失败 errno=%d(忽略, 不影响功能)", errno);
+        // 后台优先级：自身工作均为微秒级 sysfs 写，nice 10 不影响生效时机但不与前台争时间片
+        setpriority(PRIO_PROCESS, 0, 10);
     }
 
 

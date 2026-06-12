@@ -7,7 +7,7 @@ class Logger {
 private:
     static constexpr const char* logpath = "/sdcard/Android/CTS/log.txt";
 
-    constexpr static int LINE_SIZE = 1024 * 32;   //  32 KiB
+    constexpr static int LINE_SIZE = 1024 * 8;   // 8 KiB，单行日志远小于此，省 3 实例 ×24KB
     char lineCache[LINE_SIZE];
 
     LOG_LEVEL logLevel_ = LOG_LEVEL::INFO;
@@ -110,9 +110,10 @@ private:
     }
 
     void Log(LOG_LEVEL level, const char* message) {
+        if (level < logLevel_) return;  // 热路径 Debug 被过滤时不抢锁不格式化
         lock_guard<mutex> lock(logPrintMutex);
 
-        if (level >= logLevel_) {
+        {
             int len = getCurrentTimeStr(lineCache, sizeof(lineCache));
             len += FastSnprintf(lineCache + len, sizeof(lineCache) - len, "%s %s\n", levelStrings.at(level), message);
 
@@ -125,9 +126,10 @@ private:
 
     template<typename... Args>
     void Log(LOG_LEVEL level, const char* message, Args&&... args) {
+        if (level < logLevel_) return;
         lock_guard<mutex> lock(logPrintMutex);
 
-        if (level >= logLevel_) {    
+        {
             const int prefixLen = getCurrentTimeStr(lineCache, sizeof(lineCache));
 
             int len = prefixLen + FastSnprintf(lineCache + prefixLen, sizeof(lineCache) - prefixLen, "%s ", levelStrings.at(level));

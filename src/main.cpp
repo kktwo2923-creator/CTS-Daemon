@@ -30,19 +30,16 @@ int main(void) {
     StatusReporter reporter(2);
     reporter.start();
 
-#ifdef CTS_TRIAL
-    int trialTick = 0;
-#endif
     while (g_run.load(std::memory_order_relaxed)) {
-        sleep(1);
 #ifdef CTS_TRIAL
-        if (++trialTick >= 300) {
-            trialTick = 0;
-            if (!TrialGuard::allowed()) {
-                fprintf(stderr, "\n!!! CTS 体验版已到期(24 小时),自动停止运行。\n\n");
-                break;
-            }
+        sleep(300);  // 与原 300×1s 检查周期一致；信号会提前打断 sleep
+        if (!g_run.load(std::memory_order_relaxed)) break;
+        if (!TrialGuard::allowed()) {
+            fprintf(stderr, "\n!!! CTS 体验版已到期(24 小时),自动停止运行。\n\n");
+            break;
         }
+#else
+        pause();     // 纯等信号，主线程零周期唤醒
 #endif
     }
 
