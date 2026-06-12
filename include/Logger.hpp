@@ -48,10 +48,7 @@ public:
         Log(LOG_LEVEL::ERROR, message, std::forward<Args>(args)...);
     }
 
-    // [Fix] qlib::string 的 operator==(self,self) 在两个独立堆分配的字符串之间比较时
-    //            存在 UB（distance 跨堆分配），导致 level == "DEBUG" 这种字面量比较
-    //            实际上是先把 "DEBUG" 构造成新的 value，再用坏 friend operator== 比较 → 永远不匹配。
-    //            改用 strcmp 走 c_str() 路径。
+    // qlib::string operator== 跨堆分配有 UB，改用 strcmp 走 c_str()
     void setLogLevel(string_t& level) {
         const char* s = level.c_str();
         if      (!strcmp(s, "DEBUG")) logLevel_ = LOG_LEVEL::DEBUG;
@@ -73,9 +70,8 @@ public:
     }
 
 private:
-    // [日志改长] 10KB→512KB(约数千行); 超限不再整文件清空, 改为滚动保留后一半,
-    //   避免日志"突然全没了"。裁剪按行对齐, 512KB 才触发一次, 开销可忽略。
-    static constexpr long LOG_MAX_SIZE = 1024 * 512; // 512KB rolling threshold
+    // 超限时保留后半段（行对齐），避免日志突然全没
+    static constexpr long LOG_MAX_SIZE = 1024 * 512;
 
     void WriteFile(const char* content, const int len) noexcept {
         int fd = open(logpath, O_RDWR | O_CREAT | O_APPEND, 0666);
@@ -88,18 +84,17 @@ private:
                 if (buf) {
                     ssize_t n = pread(fd, buf, keep, st.st_size - keep);
                     if (n > 0) {
-                        // 对齐到下一行行首, 避免裁出半行
                         long off = 0;
                         while (off < n && buf[off] != '\n') off++;
                         if (off < n) off++;
                         if (ftruncate(fd, 0) == 0)
-                            write(fd, buf + off, n - off);   // O_APPEND: 截断后从头追加
+                            write(fd, buf + off, n - off);
                     } else {
                         ftruncate(fd, 0);
                     }
                     free(buf);
                 } else {
-                    ftruncate(fd, 0);   // 内存不足兜底: 退回旧行为
+                    ftruncate(fd, 0);
                 }
             }
             write(fd, content, len);

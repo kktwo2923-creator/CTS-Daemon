@@ -48,8 +48,7 @@ public:
         stopGuards();
     }
 
-    // AllFunC 在 Init 时调用一次（启动 GPU 守护 + 写 cpuset 等）
-    //        重载 config.json 时只需走 ReloadFunC（不再无谓写 cpuset，省 sysfs 抖动）
+    // Init 时调用一次；重载 config.json 只需走 ReloadFunC
     void AllFunC() {
         cpusetFunction();
         gpuFreqControl();
@@ -57,13 +56,11 @@ public:
         startGuards();
     }
 
-    // 仅用于运行时重载，跳过 cpuset 重写（cpuset 通常不变，重写会造成 sysfs 抖动）
-    // 但如果用户确实改了 cpuset 字段，把 enable 临时关掉再开就能强制重写
+    // 运行时重载用，不重启已运行的守护线程
     void ReloadFunC() {
-        cpusetFunction();   // 仍然写一次（实际很多 utils.FileWrite 会 chmod，开销低）
+        cpusetFunction();
         gpuFreqControl();
         CfsSchedOpt();
-        // 不再调用 startGuards()：守护线程已经在跑，避免漏判 joinable() 状态
     }
 
     void startGuards() {
@@ -100,9 +97,7 @@ public:
     bool writeSysfsLocked(const char* path, const char* value, int valLen) {
         if (!path || !value || valLen <= 0) return false;
 
-        // [Fix] 与 utils.FileWrite 对齐：open 失败时 chmod 0666 后重试
-        //            许多新 SoC（如 SM8850）的 GPU sysfs 默认 0444/0644，
-        //            直接 O_WRONLY 会 EACCES → write 失败 → tryGpuPath 误判此路径不可用 → 链式跳过。
+        // 新 SoC（如 SM8850）GPU sysfs 默认 0444，open 失败时 chmod 后重试
         int fd = open(path, O_WRONLY | O_CLOEXEC);
         if (fd < 0) {
             chmod(path, 0666);
@@ -135,8 +130,7 @@ public:
         return true;
     }
 
-    // 仅当 GPU governor 被钉死在 performance 时恢复 msm-adreno-tz, 以保留 [min,max] 区间 DVFS;
-    // 其余情况保持现状(旧实现每次写频率都强制 performance, 会把 GPU 钉在最高频、使 min 失效)。
+    // 恢复 msm-adreno-tz 以保留 [min,max] 区间 DVFS；旧实现强制 performance 会使 min 失效
     void ensureKgslDvfsGovernor() {
         const char* govPath = "/sys/class/kgsl/kgsl-3d0/devfreq/governor";
 
@@ -157,7 +151,7 @@ public:
             }
         }
 
-        // 只有当前被钉死在 performance 时才介入恢复 DVFS,否则尊重系统/用户现状
+        // 仅当 governor 被钉死在 performance 时介入，否则尊重系统现状
         if (!strstr(curGov, "performance")) return;
 
         chmod(govPath, 0666);
@@ -172,8 +166,7 @@ public:
     }
 
     int readKgslAvailableFreqs(int freqsOut[]) {
-        // [Fix] 旧的 kgsl-3d0/gpu_available_frequencies 在新内核（SM8850 等）
-        //            可能不存在，改用 devfreq 的 available_frequencies 兜底
+        // SM8850+ 新内核可能不存在 gpu_available_frequencies，用 devfreq 兜底
         static const char* paths[] = {
             "/sys/class/kgsl/kgsl-3d0/gpu_available_frequencies",
             "/sys/class/devfreq/3d00000.qcom,kgsl-3d0/available_frequencies",
@@ -315,9 +308,7 @@ public:
         return ok;
     }
 
-    // [天玑] 动态探测联发科 Mali devfreq 目录。地址前缀不固定(13000000/13040000 等),
-    //        遍历 /sys/class/devfreq/ 找名字含 ".mali" 的节点,拼出 min_freq/max_freq 路径。
-    //        命中后把完整路径写入 outPath。which: "max_freq" 或 "min_freq"。
+    // 联发科 Mali devfreq 地址前缀不固定，遍历 /sys/class/devfreq/ 找 ".mali" 节点
     bool findMaliDevfreqPath(const char* which, char* outPath, size_t outLen) {
         DIR* dir = opendir("/sys/class/devfreq/");
         if (!dir) return false;
@@ -325,7 +316,6 @@ public:
         bool found = false;
         while ((entry = readdir(dir)) != nullptr) {
             if (entry->d_name[0] == '.') continue;
-            // 匹配 ".mali" 结尾的 devfreq 节点(如 13000000.mali)
             if (strstr(entry->d_name, ".mali") == nullptr) continue;
             FastSnprintf(outPath, outLen, "/sys/class/devfreq/%s/%s", entry->d_name, which);
             if (access(outPath, F_OK) == 0) { found = true; break; }
@@ -337,8 +327,7 @@ public:
     bool tryGpuMaxPaths(int mhzMax) {
         if (mhzMax <= 0) return true;
 
-        // [天玑] 联发科 Mali GPU: 标准 devfreq, 单位 Hz, 与高通逻辑一致。
-        //        动态探测地址前缀,再固定地址兜底。
+        // 联发科 Mali：动态探测前缀，再固定地址兜底
         {
             char maliPath[128];
             if (findMaliDevfreqPath("max_freq", maliPath, sizeof(maliPath)) &&
@@ -350,16 +339,14 @@ public:
         if (tryGpuPath("/sys/class/devfreq/13040000.mali/max_freq", mhzMax, true, false, "max"))
             return true;
 
-        // [Fix] 增加 SM8850/Adreno 8x 时代的标准 devfreq 路径
-        //            新内核 devfreq 子系统挂载在 /sys/class/devfreq/<addr>.qcom,kgsl-3d0/
-        //            旧的 /sys/class/kgsl/kgsl-3d0/devfreq/ 是软链，可能不存在
+        // SM8850+ 新内核 devfreq 挂载在 /sys/class/devfreq/<addr>.qcom,kgsl-3d0/，旧软链可能不存在
         if (tryGpuPath("/sys/class/devfreq/3d00000.qcom,kgsl-3d0/max_freq",
                        mhzMax, true, true, "max"))
             return true;
         if (tryGpuPath("/sys/class/devfreq/5000000.qcom,kgsl-3d0/max_freq",
                        mhzMax, true, true, "max"))
             return true;
-        // [旧高通] 骁龙855/SM8150=2c00000, 骁龙800/801=fdb00000
+        // 骁龙855/SM8150=2c00000, 骁龙800/801=fdb00000
         if (tryGpuPath("/sys/class/devfreq/2c00000.qcom,kgsl-3d0/max_freq",
                        mhzMax, true, true, "max"))
             return true;
@@ -385,7 +372,6 @@ public:
     bool tryGpuMinPaths(int mhzMin) {
         if (mhzMin <= 0) return true;
 
-        // [天玑] 联发科 Mali GPU min_freq, 单位 Hz
         {
             char maliPath[128];
             if (findMaliDevfreqPath("min_freq", maliPath, sizeof(maliPath)) &&
@@ -397,14 +383,13 @@ public:
         if (tryGpuPath("/sys/class/devfreq/13040000.mali/min_freq", mhzMin, true, false, "min"))
             return true;
 
-        // [Fix] 同上，加 SM8850 标准 devfreq 路径
         if (tryGpuPath("/sys/class/devfreq/3d00000.qcom,kgsl-3d0/min_freq",
                        mhzMin, true, true, "min"))
             return true;
         if (tryGpuPath("/sys/class/devfreq/5000000.qcom,kgsl-3d0/min_freq",
                        mhzMin, true, true, "min"))
             return true;
-        // [旧高通] 骁龙855/SM8150=2c00000, 骁龙800/801=fdb00000
+        // 骁龙855/SM8150=2c00000, 骁龙800/801=fdb00000
         if (tryGpuPath("/sys/class/devfreq/2c00000.qcom,kgsl-3d0/min_freq",
                        mhzMin, true, true, "min"))
             return true;
@@ -424,7 +409,6 @@ public:
         return false;
     }
 
-    // 出参 maxDone/minDone 分别报告 max/min 是否写入成功(未请求的字段视为已完成)。
     bool tryGpuPwrlevel(int mhzMax, int mhzMin, bool& maxDone, bool& minDone) {
         maxDone = (mhzMax <= 0);
         minDone = (mhzMin <= 0);
@@ -472,8 +456,7 @@ public:
             if (targetHzLL > 2147483647LL) return maxDone && minDone;
 
             int targetHz = static_cast<int>(targetHzLL);
-            // 默认取最低档而非最高档(0): 目标低于全部档位时才不会误写 max_pwrlevel=0 解除上限。
-            int maxPwr = freqCount - 1;
+            int maxPwr = freqCount - 1; // 默认最低档，防目标低于全部档位时误写 max_pwrlevel=0
             int bestDiff = 0x7FFFFFFF;
 
             for (int i = 0; i < freqCount; i++) {
@@ -549,7 +532,6 @@ public:
         }
 
         if ((!minOk && mhzMin > 0) || (!maxOk && mhzMax > 0)) {
-            // 只对失败的字段走 pwrlevel 兜底(成功的传 0), 按各自结果标记。
             bool pwrMaxDone = false, pwrMinDone = false;
             tryGpuPwrlevel(maxOk ? 0 : mhzMax, minOk ? 0 : mhzMin, pwrMaxDone, pwrMinDone);
             if (!maxOk && pwrMaxDone) maxOk = true;
@@ -565,7 +547,6 @@ public:
         }
     }
 
-    // : 使用自定义频率值设置 GPU（应用画像用）
     void gpuFreqControlCustom(const string_t& customMin, const string_t& customMax) {
         int mhzMin = Fastatoi(customMin.c_str());
         int mhzMax = Fastatoi(customMax.c_str());
@@ -602,9 +583,7 @@ public:
 
         logger.Info("GPU守护已启动，周期: 3秒");
 
-        // [Fix] 记录上一轮目标值，未变化时不重写（省 sysfs 抖动）
-        // 如果其他进程篡改了 GPU 频率，sysfs 上的实际值会与 latestGpu*Mhz 不一致，
-        // 但要每次都读回比较代价更大；折中方案：值未变化时只在每 N 轮强制写一次确认。
+        // 记录上轮目标值，未变化跳过写入；每 N 轮强制写一次防被其他进程覆盖
         int lastWrittenMin = -1;
         int lastWrittenMax = -1;
         int forceCounter   = 0;
@@ -613,8 +592,6 @@ public:
             int mhzMin = Fastatoi(GpuFreq::min_freq.c_str());
             int mhzMax = Fastatoi(GpuFreq::max_freq.c_str());
 
-            // [Fix] 两个频率都未设置（都是 0/空） → 直接 sleep，避免误报"未生效"
-            //            （这是合法状态：base mode 没配 GPU，AppProfile 也没配）
             if (mhzMin <= 0 && mhzMax <= 0) {
                 for (int i = 0; i < 30 && !gpuGuardShouldExit.load(); i++) {
                     utils.sleep_ms(100);
@@ -624,8 +601,7 @@ public:
 
             {
                 bool needWrite = (mhzMin != lastWrittenMin) || (mhzMax != lastWrittenMax);
-                // 每 5 轮（15s）强制写一次，防止被其他模块覆盖
-                if (++forceCounter >= 5) {
+                if (++forceCounter >= 5) { // 每 5 轮（15s）强制写一次，防被其他模块覆盖
                     needWrite  = true;
                     forceCounter = 0;
                 }

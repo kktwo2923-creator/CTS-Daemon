@@ -1,10 +1,4 @@
 #pragma once
-// 重构：
-//   1) Way_Balance 扁平格式 + Switch 合并到 models (基础模型有 mode 字段 + Scenes 子节点)
-//   2) [Fix] 容忍配置文件把 bool/int 写成字符串（"true"/"75" 这种）
-//   3) [Fix] readBool/readInt 统一封装，避免 try/catch 噪音
-//   4) [Fix] 把模型在 models[] 中的 baseIdx 直接保存，避免重复 array()[idx] 查找
-//   5) [Fix] 解析 Scenes 提取为独立函数，减少嵌套层数
 
 #include "Json/json.h"
 #include "Config.hpp"
@@ -28,12 +22,8 @@ private:
 public:
     SchedParam  schedParam[4];
     std::string mode;
-    // [Fix] baseModelIdx 缓存：避免后续 Scenes 解析时再次遍历 models 找 baseIdx
     int         baseModelIdx = -1;
 
-    // ============================================================
-    //  公共：mode.txt
-    // ============================================================
     void LoadConfig() {
         ifstream file(modePath);
         if (!file.is_open()) {
@@ -55,20 +45,13 @@ public:
                mode == "performance" || mode == "fast";
     }
 
-    // ============================================================
-    //  helpers — 容忍多种字段类型
-    //
-    //  许多用户/编辑器会把所有值写成字符串（"true" / "75"）。
-    //  qlib::json 是严格类型库，get<bool>() 在 string 值上抛异常 → 设置被静默忽略。
-    //  这些 helper 同时接受真实的 bool/int 和字符串形态。
-    // ============================================================
+    // qlib::json 严格类型，用户常把 bool/int 写成字符串，这些 helper 同时接受两种形态。
     static string_t intToStr(int v) {
         char tmp[16];
         FastSnprintf(tmp, sizeof(tmp), "%d", v);
         return string_t(tmp);
     }
 
-    // 解析"true"/"false"/"1"/"0"/"on"/"off"/"yes"/"no"
     static bool parseBoolString(const char* s, bool& out) {
         if (!s || !*s) return false;
         if (!strcmp(s, "true") || !strcmp(s, "1") ||
@@ -82,7 +65,6 @@ public:
         return false;
     }
 
-    // readBool: 优先 native bool；不行就尝试 string
     template <class Node>
     bool readBool(Node& node, const char* key, bool& out) {
         try {
@@ -96,7 +78,6 @@ public:
         return false;
     }
 
-    // readInt: 优先 native int；不行就 atoi(string)
     template <class Node>
     bool readInt(Node& node, const char* key, int& out) {
         try {
@@ -107,7 +88,7 @@ public:
             string_t s = node[key].template get<string_t>();
             if (s.empty()) return false;
             int v = Fastatoi(s.c_str());
-            // Fastatoi 不支持负号，对于 "-1" 这种特例补一下
+            // Fastatoi 不支持负号，"-1" 特例补丁
             if (s.c_str()[0] == '-') v = -Fastatoi(s.c_str() + 1);
             out = v;
             return true;
@@ -115,7 +96,6 @@ public:
         return false;
     }
 
-    // readStr: native string
     template <class Node>
     bool readStr(Node& node, const char* key, string_t& out) {
         try {
@@ -125,7 +105,7 @@ public:
         return false;
     }
 
-    // readFreq: 支持 int / string；0 或 -1 视为"未设置"
+    // 读频率，0/-1 视为未设置
     template <class Node>
     bool readFreq(Node& node, const char* key, string_t& out) {
         int v;
@@ -134,20 +114,15 @@ public:
             out = intToStr(v);
             return true;
         }
-        // 已经是 string 形态的 readInt 会被 readInt 中的 string 分支处理
-        // 这里不再尝试 readStr，因为非数字字符串当频率没意义
         return false;
     }
 
-    // ============================================================
-    //  解析单个 model 节点 -> AppProfileModel
-    // ============================================================
     template <class Node>
     void parseModelNode(Node& node, AppProfileModel& out) {
         readStr (node, "model_name", out.modelName);
         readStr (node, "mode",       out.modeName);
         readBool(node, "is_game",    out.isGame);
-        readBool(node, "keep_alive", out.keepAlive);   // [keep_alive] 非游戏画像也可享保活
+        readBool(node, "keep_alive", out.keepAlive);
 
         // packages
         try {
@@ -163,7 +138,7 @@ public:
             out.packageCount = n;
         } catch (...) {}
 
-        // 频率 freq_min_c0 / freq_max_c0 ...
+        // 频率 freq_min_c0 / freq_max_c0 / ...
         for (int i = 0; i <= 3; i++) {
             FastSnprintf(buff, sizeof(buff), "freq_min_c%d", i);
             readFreq(node, buff, out.MinFreq[i]);
@@ -171,20 +146,17 @@ public:
             readFreq(node, buff, out.MaxFreq[i]);
         }
 
-        // gov_c0 / gov_c1 / ... 嵌套 governor + params
         parseGovernorNodes(node, out);
 
-        // GPU 频率：gpu_min_mhz / gpu_max_mhz（数字或字符串）
         readFreq(node, "gpu_min_mhz", out.GpuMinFreq);
         readFreq(node, "gpu_max_mhz", out.GpuMaxFreq);
-        // 兼容旧的嵌套写法
+        // 兼容旧嵌套写法 GpuFreq:{min_freq,max_freq}
         try {
             auto& gpu = node["GpuFreq"];
             if (out.GpuMinFreq.empty()) readFreq(gpu, "min_freq", out.GpuMinFreq);
             if (out.GpuMaxFreq.empty()) readFreq(gpu, "max_freq", out.GpuMaxFreq);
         } catch (...) {}
 
-        // 核心开关 CoreOnline:{Core0:1,...}
         try {
             auto& coreNode = node["CoreOnline"];
             for (int i = 0; i <= 7; i++) {
@@ -197,10 +169,9 @@ public:
         } catch (...) {}
     }
 
-    // 子函数：解析 gov_c0..gov_c3 的 governor + params
     template <class Node>
     void parseGovernorNodes(Node& node, AppProfileModel& out) {
-        // 此表是按内核常见调速器参数白名单（qlib::json 不支持迭代 object 的 key）
+        // qlib::json 不支持迭代 object key，故用白名单枚举调速器参数
         static const char* commonParams[] = {
             "hispeed_freq", "hispeed_load", "hispeed_cond_freq",
             "rtg_boost_freq", "pl", "zone_max_util_pct",
@@ -232,8 +203,7 @@ public:
             } catch (...) {}
         }
 
-        // [兼容] 同时支持 "governor": {"c0":"hmbird","c1":...} 这种嵌套格式。
-        // 仅当上面的 gov_cN 没读到时,从 governor.cN 补读,避免配置写法不一致导致调速器静默失效。
+        // 兼容 "governor":{"c0":"hmbird",...} 嵌套格式，仅当 gov_cN 未读到时补读
         try {
             auto& govObj = node["governor"];
             for (int i = 0; i <= 3; i++) {
@@ -246,12 +216,6 @@ public:
         } catch (...) {}
     }
 
-    // ============================================================
-    //  解析 Scenes 子节点（属于基础模型）
-    //    向后兼容两种写法：
-    //      "Standby": { "freq_max_c0": 600000 }           — 扁平（推荐）
-    //      "Standby": { "MaxFreq": {"c0":"600000"} }       — 旧嵌套
-    // ============================================================
     void resetSceneFreq() {
         for (int s = 0; s < SceneFreq::SCENE_COUNT; s++) {
             for (int i = 0; i <= 3; i++) {
@@ -273,13 +237,12 @@ public:
                 auto& oneScene = sceneRoot[sceneNames[s]];
                 bool any = false;
                 for (int i = 0; i <= 3; i++) {
-                    // 扁平写法 freq_min_c0
                     FastSnprintf(buff, sizeof(buff), "freq_min_c%d", i);
                     if (readFreq(oneScene, buff, SceneFreq::MinFreq[s][i])) any = true;
                     FastSnprintf(buff, sizeof(buff), "freq_max_c%d", i);
                     if (readFreq(oneScene, buff, SceneFreq::MaxFreq[s][i])) any = true;
 
-                    // 兼容旧嵌套写法
+                    // 兼容旧嵌套写法 MinFreq/MaxFreq/governor:{cN:...}
                     FastSnprintf(buff, sizeof(buff), "c%d", i);
                     string_t v;
                     try {
@@ -304,9 +267,6 @@ public:
         if (loaded > 0) logger.Info("场景频率已加载 %d 个", loaded);
     }
 
-    // ============================================================
-    //  清零所有运行时状态
-    // ============================================================
     void resetState() {
         for (int i = 0; i <= 3; i++) {
             for (int j = 0; j < 24; j++) {
@@ -319,7 +279,7 @@ public:
             LaunchBoost::BoostFreq[i]    = "";
         }
         for (int i = 0; i <= 7; i++) Performances::Online[i] = -1;
-        // 清簇映射, 防止热重载时新配置删了某 cN 键导致旧簇号残留。
+        // 热重载时需清簇映射，防止删掉的 cN 键残留旧值
         for (int i = 0; i <= 3; i++) Policy::CpuPolicy[i] = -1;
         GpuFreq::min_freq = "";
         GpuFreq::max_freq = "";
@@ -349,9 +309,6 @@ public:
         resetSceneFreq();
     }
 
-    // ============================================================
-    //  主入口
-    // ============================================================
     bool readConfig() {
         resetState();
 
@@ -362,9 +319,7 @@ public:
         int rc = json::parse(&json, text.data(), text.data() + text.size());
         if (rc != 0) { logger.Error("解析 config.json 失败 错误码: %d", rc); return false; }
 
-        // ---- meta ----
-        // [Fix] meta 是第一个解析的节点，loglevel 必须在所有后续 logger.Info 之前生效
-        // 否则用户即使配 loglevel=ERROR，readConfig() 里几十条 INFO 也会全部刷出来
+        // ---- meta ----（loglevel 须在其余节点解析前生效）
         try {
             auto& m = json["meta"];
             readStr (m, "name",     Meta::name);
@@ -372,7 +327,6 @@ public:
             readStr (m, "author",   Meta::author);
             readStr (m, "loglevel", Meta::loglevel);
         } catch (...) { logger.Warn("meta 节点缺失"); }
-        // 立即生效 loglevel，避免后续 readConfig 内部的 Info 日志破坏顺序
         if (!Meta::loglevel.empty()) logger.setLogLevel(Meta::loglevel);
 
         // ---- Policy ----
@@ -391,12 +345,7 @@ public:
         parseFunctionSection();
 
         LoadConfig();
-        // [Fix] mode.txt 是外部文件，可能被写入画像模型名(game_heavy/video 等无 mode 字段的
-        //       AppProfile 模型)或其它非法值。早期实现遇到非法值直接 return false 中止整次
-        //       readConfig，导致守护拒绝应用配置、表现为"情景模式无效/配置重载失败"反复刷屏，
-        //       看似崩溃循环。守护进程不应因一次外部脏写而失效——改为告警并回退到安全基础档
-        //       balance，保证始终能加载并应用一份有效配置。
-        //       (按 App 自动切换的画像由 AppProfile 按包名匹配处理，本就不经过 mode.txt。)
+        // mode.txt 可能被外部写入非法值，回退 balance 避免守护进程整体失效
         if (mode.empty()) {
             logger.Warn("情景模式为空，回退到 balance");
             mode = "balance";
@@ -407,21 +356,15 @@ public:
         }
         logger.Info("当前情景模式: %s", mode.c_str());
 
-        // ---- package_blacklist + models ----
         parseBlacklist();
         parseModels();
-
-        // ---- 在 models 中找 mode 匹配的基础模型 → 填充 Performances 和 Scenes ----
         applyBaseModel();
-
-        // ---- 加载 perapp_powermode.txt 覆盖层(优先于 config 的 packages) ----
         loadPerApp();
 
         return true;
     }
 
-    // 加载 /sdcard/Android/CTS/perapp_powermode.txt
-    //   每行 "包名 画像名"; # 注释; * 开头为全局默认行。填充 AppProfile::perApp*。
+    // 每行 "包名 画像名"，# 注释，* 开头为全局默认行
     void loadPerApp() {
         using namespace Config;
         AppProfile::perAppCount = 0;
@@ -435,23 +378,21 @@ public:
         if (!fp) { logger.Info("perapp_powermode.txt 不存在,跳过(仅用 config 画像)"); return; }
         char line[512];
         while (fgets(line, sizeof(line), fp)) {
-            // 去首尾空白
             char* s = line;
             while (*s == ' ' || *s == '\t') s++;
             size_t len = strlen(s);
             while (len > 0 && (s[len-1] == '\n' || s[len-1] == '\r' || s[len-1] == ' ' || s[len-1] == '\t'))
                 s[--len] = '\0';
             if (len == 0 || s[0] == '#') continue;
-            if (s[0] == '*') {                       // 全局默认行: * <mode>
+            if (s[0] == '*') {
                 char* sp = s + 1;
                 while (*sp == ' ' || *sp == '\t') sp++;
                 if (*sp) AppProfile::perAppGlobal = sp;
                 continue;
             }
-            // 拆 "包名 画像名"
             char* sep = s;
             while (*sep && *sep != ' ' && *sep != '\t') sep++;
-            if (!*sep) continue;                     // 没有第二列,跳过
+            if (!*sep) continue;
             *sep = '\0';
             char* mode = sep + 1;
             while (*mode == ' ' || *mode == '\t') mode++;
@@ -463,7 +404,7 @@ public:
             }
         }
         fclose(fp);
-        // [优化] inotify 每次触发都会重载,只在条数变化(新增/删减)时打印,避免刷屏
+        // 仅在条数变化时打印，避免 inotify 重载刷屏
         static int lastPerAppCount = -1;
         if (AppProfile::perAppCount != lastPerAppCount) {
             logger.Info("perapp_powermode.txt 已加载: %d 条 App 画像覆盖(优先于 config)",
@@ -473,12 +414,10 @@ public:
     }
 
 private:
-    // ---- Function 子树 ----
     void parseFunctionSection() {
         try {
             auto& F = json["Function"];
 
-            // Cpuset
             try {
                 auto& c = F["Cpuset"];
                 readBool(c, "enable",            Cpuset::enable);
@@ -489,7 +428,6 @@ private:
                 readStr (c, "restricted",        Cpuset::restricted);
             } catch (...) { logger.Debug("无 Cpuset 节点"); }
 
-            // LaunchBoost
             try {
                 auto& l = F["LaunchBoost"];
                 readBool(l, "enable",              LaunchBoost::enable);
@@ -503,13 +441,11 @@ private:
                 } catch (...) {}
             } catch (...) {}
 
-            // OfficialMode
             try {
                 auto& o = F["OfficialMode"];
                 readBool(o, "enable", OfficialMode::enable);
             } catch (...) {}
 
-            // Scheduler
             try {
                 auto& s = F["Scheduler"];
                 readBool(s, "enable",                       Scheduler::enable);
@@ -524,13 +460,11 @@ private:
                 readStr (s, "sched_util_clamp_max",         Scheduler::Sched_util_clamp_max);
             } catch (...) {}
 
-            // GpuFreq.enable
             try {
                 auto& g = F["GpuFreq"];
                 readBool(g, "enable", GpuFreq::enable);
             } catch (...) {}
 
-            // SceneDetect
             try {
                 auto& sc = F["SceneDetect"];
                 readBool(sc, "enable",                  SceneCfg::enable);
@@ -539,7 +473,6 @@ private:
                 readInt (sc, "heavy_confirm_count",     SceneCfg::heavy_confirm_count);
                 readInt (sc, "heavy_max_duration_ms",   SceneCfg::heavy_max_duration_ms);
                 readInt (sc, "request_burst_slack_ms",  SceneCfg::request_burst_slack_ms);
-                // 突发负载（类卡顿）检测参数
                 readInt (sc, "burst_delta_thd",         SceneCfg::burst_delta_thd);
                 readInt (sc, "burst_min_load",          SceneCfg::burst_min_load);
                 readInt (sc, "am_switch_duration_ms",   SceneCfg::am_switch_duration_ms);
@@ -550,13 +483,11 @@ private:
                 readInt (sc, "input_dev_max",           SceneCfg::input_dev_max);
             } catch (...) {}
 
-            // AppProfile
             try {
                 auto& ap = F["AppProfile"];
                 readBool(ap, "enable", AppProfile::enable);
             } catch (...) {}
 
-            // NetlinkScreen
             try {
                 auto& nl = F["NetlinkScreen"];
                 readBool(nl, "enable",           NetlinkCfg::enable);
@@ -579,7 +510,7 @@ private:
                 } catch (...) { break; }
             }
             AppProfile::blacklistCount = n;
-            // [优化] 只在首次加载或条数变化时打印,避免每次重载 config 刷屏
+            // 仅在条数变化时打印，避免重载刷屏
             static int lastBlacklistCount = -1;
             if (n > 0 && n != lastBlacklistCount) {
                 logger.Info("包名黑名单已加载: %d 条", n);
@@ -589,8 +520,7 @@ private:
     }
 
     void parseModels() {
-        // 明细日志只在进程首次加载时打印一次(确认模型加载成功);
-        // 之后每次切档重载不再刷屏(降级为 Debug)。
+        // 首次加载打印详细日志，后续重载降为 Debug 避免刷屏
         static bool firstLoad = true;
         try {
             auto& arr = json["models"];
@@ -621,14 +551,10 @@ private:
         } catch (...) { logger.Debug("无 models 节点"); }
     }
 
-    // 从 models 中找 mode 匹配的基础模型，填充 Performances + GpuFreq + schedParam[] + Scenes
     void applyBaseModel() {
         baseModelIdx = -1;
         for (int i = 0; i < AppProfile::modelCount; i++) {
-            // [Fix] qlib::string 的 operator== 在两个独立堆分配的 string_t 之间比较时
-            //            有 UB（friend operator==(a,b) 调用 equal(a.begin(), b.end(), b.begin())
-            //            导致 distance 跨指针越界）。这就是日志显示"找不到 mode='powersave'"
-            //            但明明 powersave 已加载的根本原因。改用 strcmp 走 c_str() 路径。
+            // qlib::string operator== 跨堆分配时有 UB，改用 strcmp 走 c_str()
             const char* mn = AppProfile::Models[i].modeName.c_str();
             if (mn && strcmp(mn, mode.c_str()) == 0) {
                 baseModelIdx = i;
@@ -659,11 +585,10 @@ private:
         for (int i = 0; i <= 7; i++)
             Performances::Online[i] = m.Online[i];
 
-        // SchedParam 拷贝到全局 schedParam[]
         for (int i = 0; i <= 3; i++) {
             int cnt = m.SchedParamCount[i];
             for (int j = 0; j < cnt && j < 23; j++) {
-                // schedParam[].Name/Value 是 1-indexed（历史原因）
+                // schedParam[].Name/Value 1-indexed（历史原因）
                 schedParam[i].Name [j+1] = m.SchedParamName [i][j];
                 schedParam[i].Value[j+1] = m.SchedParamValue[i][j];
             }
@@ -672,7 +597,6 @@ private:
         GpuFreq::max_freq = m.GpuMaxFreq;
         logger.Info("基础模型: %s (mode=%s)", m.modelName.c_str(), mode.c_str());
 
-        // ---- Scenes（场景频率覆盖）从基础模型的 Scenes 字段读取 ----
         try {
             auto& sceneRoot = json["models"].array()[baseModelIdx]["Scenes"];
             parseScenesNode(sceneRoot);

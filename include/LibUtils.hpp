@@ -4,7 +4,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
-#include <cstring>     // [Fix] 显式 include，避免依赖间接传递
+#include <cstring>
 #include <cstdint>
 
 namespace LibUtils {
@@ -57,8 +57,7 @@ namespace LibUtils {
             ++fmt;                          
             switch (*fmt++) {
             case 'd': {
-                // [Fix] 原实现把 int 直接当 unsigned 输出，负数(如 version=-1)会变成
-                //       4294967295 这种天文数字。补上符号处理；取负用 unsigned 运算避免 INT_MIN 溢出 UB。
+                // 原实现对负数输出天文数字；取负用 unsigned 运算避免 INT_MIN 溢出 UB
                 int v = va_arg(ap, int);
                 if (v < 0) {
                     if (p < end) *p = '-';

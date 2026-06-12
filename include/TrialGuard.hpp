@@ -1,25 +1,7 @@
 #pragma once
 
-// ============================================================
-//  CTS 体验版守卫(24 小时试用) — 加固版
-//
-//  仅当编译期定义了 CTS_TRIAL 才启用; 正式版不定义 → 全部为空操作, 无任何限制。
-//
-//  机制: 首次启动记录(带签名的)时间戳; 超过 TRIAL_SECONDS(24h)后, 进程启动即失败退出
-//        (main 返回非 0), 运行中到期也会自动停止。
-//
-//  ⚠ 重要: root 本地二进制无法做到"不可破解"(root 可改时间/删文件/反编译 patch)。
-//     本守卫只"大幅抬高门槛"。真正强授权需联网由服务器签发/校验 token。
-//
-//  加固点:
-//   1) keyed-hash 签名 —— 手改/伪造时间戳(first/last)→ 签名不符 → 判作弊到期; lastSeen 受
-//      签名保护, 防回调才真正有效。
-//   2) 设备指纹绑定 —— 签名混入 ro.serialno 派生的指纹 → 把已激活的时间戳文件拷到别的设备
-//      无效(指纹不同→签名失配→判作弊)。
-//   3) 反调试 —— 检测 TracerPid(frida/ptrace 动态 hook)→ 被调试即判到期。
-//   4) 字符串混淆 —— 路径与命令编译期 XOR 编码, strings 抓不到明文。
-//   5) 多点隐蔽冗余 + 防系统时间回调 + 防开机时钟未同步误判。
-// ============================================================
+// CTS 体验版 24h 试用守卫（仅 CTS_TRIAL 时启用，正式版为空操作）
+// 加固：keyed-hash 签名防篡改、设备指纹防文件迁移、TracerPid 反调试、路径 XOR 混淆
 
 #ifdef CTS_TRIAL
 
@@ -32,12 +14,12 @@
 
 namespace TrialGuard {
 
-    static constexpr long TRIAL_SECONDS = 24L * 60 * 60;   // 试用时长: 24 小时
-    static constexpr long SANE_MIN      = 1577836800L;     // 2020-01-01, 低于此视为时钟未同步
-    static constexpr long BACK_TOL      = 3600L;           // 时间回调容差(1h, 容 NTP 微调)
-    static constexpr unsigned char XK   = 0x5A;            // 字符串混淆 XOR key
+    static constexpr long TRIAL_SECONDS = 24L * 60 * 60;
+    static constexpr long SANE_MIN      = 1577836800L;     // 2020-01-01，低于此视为时钟未同步
+    static constexpr long BACK_TOL      = 3600L;           // NTP 微调容差
+    static constexpr unsigned char XK   = 0x5A;
 
-    // ---- 字符串混淆: 编译期 XOR 编码, 运行时解到栈 buffer(strings 抓不到明文)----
+    // 编译期 XOR 混淆，strings 工具无法抓到明文路径
     template<int N> struct Obf {
         char d[N];
         constexpr Obf(const char (&s)[N]) : d{} {
@@ -49,7 +31,6 @@ namespace TrialGuard {
     }
 
     static constexpr int PATH_CNT = 5;
-    // 取第 i 个时间戳路径(解码到 out, out 需 >= 64)
     inline void getPath(int i, char* out) {
         switch (i) {
             case 0: { constexpr Obf o("/data/adb/.cts_lic");            unobf(o, out); break; }
@@ -61,14 +42,13 @@ namespace TrialGuard {
         }
     }
 
-    // 64-bit 混合(finalizer)
     inline unsigned long long mix(unsigned long long x) {
         x ^= x >> 33; x *= 0xff51afd7ed558ccdULL;
         x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL;
         x ^= x >> 33; return x;
     }
 
-    // 编译期密钥(拆片异或还原, 不以明文连续出现)
+    // 密钥拆片异或，防止明文连续出现在二进制中
     inline unsigned long long secret() {
         volatile unsigned long long a = 0x9E3779B97F4A7C15ULL;
         volatile unsigned long long b = 0xD1B54A32D192ED03ULL;
@@ -76,7 +56,7 @@ namespace TrialGuard {
         return (unsigned long long)a ^ ((unsigned long long)b * 0x100000001B3ULL) ^ (unsigned long long)c;
     }
 
-    // 设备指纹: 由 ro.serialno 派生(缓存)。取不到则退化为固定值(仍有签名, 只是不绑定设备)。
+    // ro.serialno 派生的设备指纹（FNV-1a），取不到则退化为固定值
     inline unsigned long long deviceFingerprint() {
         static unsigned long long cached = 0;
         static bool done = false;
@@ -99,7 +79,6 @@ namespace TrialGuard {
         return cached;
     }
 
-    // 对 (first,last) 计算 keyed-hash 签名(混入密钥 + 设备指纹)
     inline unsigned long long sign(long first, long last) {
         unsigned long long k = secret() ^ deviceFingerprint();
         unsigned long long h = mix(k ^ (unsigned long long)first);
@@ -108,7 +87,6 @@ namespace TrialGuard {
         return h;
     }
 
-    // 反调试: TracerPid != 0 说明被 ptrace/frida 附加
     inline bool beingTraced() {
         int fd = open("/proc/self/status", O_RDONLY);
         if (fd < 0) return false;
@@ -138,7 +116,7 @@ namespace TrialGuard {
         long f = 0, l = 0;
         unsigned long long sig = 0;
         if (sscanf(b, "%ld %ld %llx", &f, &l, &sig) != 3) return TAMPERED;
-        if (sign(f, l) != sig) return TAMPERED;   // 签名不符(被改 / 换设备)= 作弊
+        if (sign(f, l) != sig) return TAMPERED;
         first = f; last = l;
         return VALID;
     }
@@ -158,28 +136,27 @@ namespace TrialGuard {
         }
     }
 
-    // 返回 true = 允许启动/继续; false = 已到期(或检测到作弊/被调试)。
     inline bool allowed() {
-        if (beingTraced()) return false;            // 反调试
+        if (beingTraced()) return false;
 
         long now = (long)time(nullptr);
-        if (now < SANE_MIN) return true;            // 时钟未同步 → 放行不计时
+        if (now < SANE_MIN) return true;            // 时钟未同步放行
 
         long first = 0, lastSeen = 0;
         for (int i = 0; i < PATH_CNT; i++) {
             char path[64]; getPath(i, path);
             long f = 0, l = 0;
             RecState st = readOne(path, f, l);
-            if (st == TAMPERED) return false;       // 存在但签名非法 → 作弊
+            if (st == TAMPERED) return false;
             if (st == VALID) {
                 if (f >= SANE_MIN && (first == 0 || f < first)) first = f;
                 if (l > lastSeen) lastSeen = l;
             }
         }
 
-        if (first == 0) first = now;                // 首次运行
+        if (first == 0) first = now;
 
-        if (lastSeen >= SANE_MIN && now < lastSeen - BACK_TOL) return false;  // 防回调
+        if (lastSeen >= SANE_MIN && now < lastSeen - BACK_TOL) return false;  // 防时钟回调
 
         long newest = now > lastSeen ? now : lastSeen;
         writeAll(first, newest);
@@ -187,7 +164,6 @@ namespace TrialGuard {
         return (now - first) < TRIAL_SECONDS;
     }
 
-    // 剩余秒数(用于提示; 已到期/作弊返回 0)。
     inline long remainSeconds() {
         long now = (long)time(nullptr);
         if (now < SANE_MIN) return TRIAL_SECONDS;
