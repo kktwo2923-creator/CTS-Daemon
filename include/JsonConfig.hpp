@@ -319,8 +319,7 @@ public:
             LaunchBoost::BoostFreq[i]    = "";
         }
         for (int i = 0; i <= 7; i++) Performances::Online[i] = -1;
-        // [Fix] 清掉簇映射。否则热重载时若新配置删掉某个 cN 键(如三簇→双簇),
-        //   解析循环只在键存在时才赋值, 旧簇号会残留生效, 导致写错/漏写 cpufreq policy。
+        // 清簇映射, 防止热重载时新配置删了某 cN 键导致旧簇号残留。
         for (int i = 0; i <= 3; i++) Policy::CpuPolicy[i] = -1;
         GpuFreq::min_freq = "";
         GpuFreq::max_freq = "";

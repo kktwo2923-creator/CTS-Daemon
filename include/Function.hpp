@@ -135,12 +135,8 @@ public:
         return true;
     }
 
-    // [Fix] 旧实现 setKgslGovernorPerformance() 在每次写 GPU min/max 前把 kgsl devfreq
-    //   governor 强制设为 "performance",会把 GPU 钉死在 max_freq、彻底废掉 DVFS——
-    //   与 [min,max] 区间调频和省电目标直接矛盾(min=160 形同虚设),且 gpuFreqGuard 每 15s
-    //   还会强化一次。现改为:仅当 governor 当前被钉在 "performance"(可能是旧版本或某些
-    //   ROM/游戏模式残留)时,恢复为支持区间调频的 Adreno 默认 governor msm-adreno-tz;
-    //   其余情况一律保持系统现状不动。这样写入 min_freq/max_freq 后 GPU 仍能在区间内 DVFS。
+    // 仅当 GPU governor 被钉死在 performance 时恢复 msm-adreno-tz, 以保留 [min,max] 区间 DVFS;
+    // 其余情况保持现状(旧实现每次写频率都强制 performance, 会把 GPU 钉在最高频、使 min 失效)。
     void ensureKgslDvfsGovernor() {
         const char* govPath = "/sys/class/kgsl/kgsl-3d0/devfreq/governor";
 
@@ -428,8 +424,7 @@ public:
         return false;
     }
 
-    // [Fix] 出参 maxDone/minDone 分别报告 max/min 是否真正写入成功(未请求的字段视为已完成),
-    //   避免旧实现"min 或 max 任一成功就整体返回 true"导致调用方把两个都误标成功、掩盖一半失败。
+    // 出参 maxDone/minDone 分别报告 max/min 是否写入成功(未请求的字段视为已完成)。
     bool tryGpuPwrlevel(int mhzMax, int mhzMin, bool& maxDone, bool& minDone) {
         maxDone = (mhzMax <= 0);
         minDone = (mhzMin <= 0);
@@ -477,8 +472,7 @@ public:
             if (targetHzLL > 2147483647LL) return maxDone && minDone;
 
             int targetHz = static_cast<int>(targetHzLL);
-            // [Fix] 默认取最受限的最低档(freqCount-1)而非 0(最高档)。旧默认 0 在请求的 max
-            //   低于全部可用频率时会写 max_pwrlevel=0 = 解除上限,与"限制最高频"语义完全相反。
+            // 默认取最低档而非最高档(0): 目标低于全部档位时才不会误写 max_pwrlevel=0 解除上限。
             int maxPwr = freqCount - 1;
             int bestDiff = 0x7FFFFFFF;
 
@@ -555,8 +549,7 @@ public:
         }
 
         if ((!minOk && mhzMin > 0) || (!maxOk && mhzMax > 0)) {
-            // [Fix] 只对真正失败的字段走 pwrlevel 兜底(已成功的传 0=不再触碰),
-            //   并按 max/min 各自的写入结果分别标记成功,不再一刀切。
+            // 只对失败的字段走 pwrlevel 兜底(成功的传 0), 按各自结果标记。
             bool pwrMaxDone = false, pwrMinDone = false;
             tryGpuPwrlevel(maxOk ? 0 : mhzMax, minOk ? 0 : mhzMin, pwrMaxDone, pwrMinDone);
             if (!maxOk && pwrMaxDone) maxOk = true;
@@ -652,7 +645,6 @@ public:
                                        pwrMaxDone, pwrMinDone);
                         if (!maxOk && pwrMaxDone) maxOk = true;
                         if (!minOk && pwrMinDone) minOk = true;
-                        // [Fix] 三条路径都失败 → 明确告警，方便用户排查权限/驱动问题
                         if ((!minOk && mhzMin > 0) || (!maxOk && mhzMax > 0)) {
                             logger.Warn("GPU频率写入未完全生效 (min=%d max=%d, minOk=%d maxOk=%d) — 检查 root/SELinux/驱动支持",
                                         mhzMin, mhzMax, minOk ? 1 : 0, maxOk ? 1 : 0);
