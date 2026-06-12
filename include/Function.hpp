@@ -24,8 +24,6 @@ using namespace Config;
 class Function {
 public:
     std::atomic<bool> gpuGuardShouldExit{false};
-    std::atomic<int> latestGpuMaxMhz{-1};
-    std::atomic<int> latestGpuMinMhz{-1};
 
 private:
     static constexpr const char* qcomFeas = "/sys/module/perfmgr/parameters/perfmgr_enable";
@@ -51,9 +49,8 @@ private:
     int kgslAvailFreqs_[64];
     int kgslAvailCount_ = -1;
 
-    // 回读 min 频率的有效节点缓存
-    const char* gpuMinReadPath_ = nullptr;
-    bool gpuMinReadIsMhz_ = false;
+    // 回读 min 频率的有效节点缓存；guard 线程与重载线程并发读写，用 atomic 消除竞争
+    std::atomic<const char*> gpuMinReadPath_{nullptr};
 
 public:
     Function() = default;
@@ -73,11 +70,16 @@ public:
         startGuards();
     }
 
-    // 运行时重载用，不重启已运行的守护线程
+    // 运行时重载用；重载后同步守护线程状态(enable 翻转时补启/停掉)，已运行则不重启
     void ReloadFunC() {
         cpusetFunction();
         gpuFreqControl();
         CfsSchedOpt();
+        if (GpuFreq::enable) {
+            startGuards(); // 幂等：已在运行则不重复启动
+        } else {
+            stopGuards();
+        }
     }
 
     void startGuards() {
@@ -565,16 +567,10 @@ public:
 
         if (mhzMin > 0) {
             minOk = tryGpuMinPaths(mhzMin);
-            if (minOk) {
-                latestGpuMinMhz.store(mhzMin);
-            }
         }
 
         if (mhzMax > 0) {
             maxOk = tryGpuMaxPaths(mhzMax);
-            if (maxOk) {
-                latestGpuMaxMhz.store(mhzMax);
-            }
         }
 
         if ((!minOk && mhzMin > 0) || (!maxOk && mhzMax > 0)) {
@@ -605,16 +601,10 @@ public:
 
         if (mhzMin > 0) {
             minOk = tryGpuMinPaths(mhzMin);
-            if (minOk) {
-                latestGpuMinMhz.store(mhzMin);
-            }
         }
 
         if (mhzMax > 0) {
             maxOk = tryGpuMaxPaths(mhzMax);
-            if (maxOk) {
-                latestGpuMaxMhz.store(mhzMax);
-            }
         }
 
         if ((!minOk && mhzMin > 0) || (!maxOk && mhzMax > 0)) {
@@ -628,23 +618,25 @@ public:
     // 回读当前 GPU 最低频(MHz)。OnePlus 等 ROM 的 GPU 管理会周期性覆盖 min,
     // 守护据此判断是否被改动并立即纠正。读不到返回 -1。
     int readCurrentGpuMinMhz() {
-        // 缓存有效节点：稳态每次回读只 open 一个节点，不重复探测 4 条路径
-        if (gpuMinReadPath_) {
-            int v = utils.readInt(gpuMinReadPath_);
-            if (v > 0) return gpuMinReadIsMhz_ ? v : v / 1000000;
-            gpuMinReadPath_ = nullptr;
-        }
         static constexpr const char* mhzPath = "/sys/class/kgsl/kgsl-3d0/min_clock_mhz"; // 高通 kgsl, MHz
+        // 缓存有效节点：稳态每次回读只 open 一个节点，不重复探测 4 条路径。
+        // 单 atomic 指针即可，是否 MHz 由指针身份(== mhzPath)推导，避免双字段撕裂。
+        const char* cached = gpuMinReadPath_.load(std::memory_order_relaxed);
+        if (cached) {
+            int v = utils.readInt(cached);
+            if (v > 0) return cached == mhzPath ? v : v / 1000000;
+            gpuMinReadPath_.store(nullptr, std::memory_order_relaxed);
+        }
         int v = utils.readInt(mhzPath);
-        if (v > 0) { gpuMinReadPath_ = mhzPath; gpuMinReadIsMhz_ = true; return v; }
-        static const char* hzPaths[] = {
+        if (v > 0) { gpuMinReadPath_.store(mhzPath, std::memory_order_relaxed); return v; }
+        static constexpr const char* hzPaths[] = {
             "/sys/class/devfreq/3d00000.qcom,kgsl-3d0/min_freq",
             "/sys/class/devfreq/5000000.qcom,kgsl-3d0/min_freq",
             "/sys/class/kgsl/kgsl-3d0/devfreq/min_freq",
         };
         for (auto p : hzPaths) {
             v = utils.readInt(p);
-            if (v > 0) { gpuMinReadPath_ = p; gpuMinReadIsMhz_ = false; return v / 1000000; } // Hz -> MHz
+            if (v > 0) { gpuMinReadPath_.store(p, std::memory_order_relaxed); return v / 1000000; } // Hz -> MHz
         }
         return -1;
     }
@@ -653,11 +645,9 @@ public:
         bool minOk = true, maxOk = true;
         if (mhzMin > 0) {
             minOk = tryGpuMinPaths(mhzMin);
-            if (minOk) latestGpuMinMhz.store(mhzMin);
         }
         if (mhzMax > 0) {
             maxOk = tryGpuMaxPaths(mhzMax);
-            if (maxOk) latestGpuMaxMhz.store(mhzMax);
         }
         if ((!minOk && mhzMin > 0) || (!maxOk && mhzMax > 0)) {
             bool pwrMaxDone = false, pwrMinDone = false;

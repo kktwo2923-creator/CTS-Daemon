@@ -92,7 +92,7 @@ jobs:
             mkdir -p "bundle/$abi"
             cp "$d/CoreTurboScheduler" "bundle/$abi/"
           done
-          cp -r Json conf README.md LICENSE bundle/
+          cp -r Json README.md LICENSE bundle/
           ls -laR bundle/
 
       - name: Upload bundle
@@ -156,8 +156,8 @@ jobs:
             mkdir -p "bundle/$abi"
             cp "$d/CoreTurboScheduler" "bundle/$abi/"
           done
-          cp -r Json conf README.md LICENSE bundle/
-          # 裸二进制(直接替换模块用) + 整包(二进制+Json+conf)
+          cp -r Json README.md LICENSE bundle/
+          # 裸二进制(直接替换模块用) + 整包(二进制+Json)
           cp artifacts/CoreTurboScheduler-arm64-v8a/CoreTurboScheduler ./CoreTurboScheduler-arm64-v8a
           (cd bundle && zip -r ../CoreTurboScheduler-nightly.zip .)
           sha256sum CoreTurboScheduler-arm64-v8a CoreTurboScheduler-nightly.zip | tee SHA256SUMS.txt
@@ -173,7 +173,7 @@ jobs:
             每次推送自动更新。
 
             - **CoreTurboScheduler-arm64-v8a** — 裸二进制(直接替换模块里的同名文件)
-            - **CoreTurboScheduler-nightly.zip** — 二进制 + Json/conf 整包
+            - **CoreTurboScheduler-nightly.zip** — 二进制 + Json 整包
             - **SHA256SUMS.txt** — 校验值
           files: |
             CoreTurboScheduler-arm64-v8a

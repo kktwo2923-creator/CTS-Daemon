@@ -5,9 +5,9 @@
 
 ## 修复的 Bug
 
-### Bug A (最关键): `writeSysfsLocked` 不会 chmod
+### Bug A (最关键): `writeSysfs` 不会 chmod
 CPU 路径用的 `utils.FileWrite` 在 `open()` 失败时会 `chmod 0666` 然后重试。
-但 GPU 路径专用的 `writeSysfsLocked` **没有这个 fallback** —— 直接 `return false`。
+但 GPU 路径专用的 `writeSysfs` **没有这个 fallback** —— 直接 `return false`。
 
 骁龙 8 Elite Gen 5（SM8850）等新 SoC 的 Adreno sysfs 默认权限通常是 `0444`/`0644`，
 导致 root 进程也可能 EACCES。表现是：
@@ -16,17 +16,17 @@ CPU 路径用的 `utils.FileWrite` 在 `open()` 失败时会 `chmod 0666` 然后
 - `gpuFreqControl` 输出"GPU频率设置可能未完全生效"
 - 日志看起来一切正常，但 GPU 实际频率纹丝不动
 
-**修法**：`writeSysfsLocked` 也走 chmod 0666 fallback，与 `utils.FileWrite` 对齐。
+**修法**：`writeSysfs` 也走 chmod 0666 fallback，与 `utils.FileWrite` 对齐。
 
-### Bug B: `applyScene` 和 `Release` 不应用 GPU
+### Bug B: `applyCurrentMode` / `applyBaseMode` 不应用 GPU
 原版只有 `applyAppProfile` 调用 `gpuFreqControlCustom`。游戏退出后回桌面：
-- AppProfile 不再匹配 → 走 `applyScene`/`Release` 路径
-- 这俩函数**完全不碰 GPU**
+- AppProfile 不再匹配 → 走 `applyCurrentMode`/`applyBaseMode` 路径
+- 这条路径**完全不碰 GPU**
 - 必须等 `gpuFreqGuard` 下一轮（最长 15s）才把 GPU 还原到基础 mode 设定
 - 期间 GPU 卡在游戏的高频上**继续耗电**
 
-**修法**：新增 `applyBaseGpu()` helper，在 `applyScene` 和 `Release` 末尾调用，
-确保 GPU 频率与 CPU 频率同步还原。去抖由 gpuFreqGuard 内部的 `lastWrittenMin/Max` 兜底。
+**修法**：新增 `applyBaseGpu()` helper，在 `applyBaseMode` 末尾调用，
+确保 GPU 频率与 CPU 频率同步还原。去抖由 gpuFreqGuard 的回读纠偏兜底。
 
 ### Bug C: SM8850 / Adreno 8x 的新 sysfs 路径未覆盖
 原版只尝试 4 个老路径：
@@ -59,7 +59,7 @@ CPU 路径用的 `utils.FileWrite` 在 `open()` 失败时会 `chmod 0666` 然后
 原版静默地写"GPU频率设置可能未完全生效"，但用户不知道是权限问题、驱动问题还是路径问题。
 
 **修法**：`tryGpuPwrlevel` 也失败 → 显式 `logger.Warn` 提示用户检查
-root/SELinux/驱动支持。`writeSysfsLocked` 失败时记录 errno。
+root/SELinux/驱动支持。`writeSysfs` 失败时记录 errno。
 
 ## 验证
 NDK syntax-check 通过，无回归错误。

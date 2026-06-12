@@ -269,7 +269,7 @@ ls /sys/devices/system/cpu/cpufreq/
 
 CTS 的应对：
 1. 所有模板模型都明确设 `down_rate_limit_us`（powersave/balance=4000，performance=8000）
-2. `Release()` 会重新写基础 SchedParam（游戏退出后 rate_limit 一定还原）
+2. `applyBaseMode()` 会重新写基础 SchedParam（游戏退出后 rate_limit 一定还原）
 3. 不走场景切换路径，CPU 频率上下限不再被频繁重写
 
 ### Q: 配置改了没生效？
@@ -291,7 +291,7 @@ CTS 的应对：
 
 - **无场景检测线程** —— 不启动 `sceneTickTask` / `screenStateTask` / `loadSamplingTask` / `touchDetectTask`，进程更轻,频率上下限不被频繁重写
 - **模板模型都显式设 rate_limit** —— powersave/balance/video/reading/music 的 `down_rate_limit_us` ≤ 4000μs(CPU 真正能降频的关键)；游戏/性能模式 `up_rate_limit_us` ≤ 5000μs 保证响应；风驰 fast 用 `down_rate_limit_us=16000` 维持高频粘性
-- **退出 AppProfile 必还原** —— `Release()` 重写基础 mode 的 SchedParam,杜绝游戏的 `down_rate_limit_us=16000` 残留导致"回桌面不降频"
+- **退出 AppProfile 必还原** —— `applyBaseMode()` 重写基础 mode 的 SchedParam,杜绝游戏的 `down_rate_limit_us=16000` 残留导致"回桌面不降频"
 - **频率响应交给 governor** —— 用 `up_rate_limit_us` / `down_rate_limit_us` / `hispeed_load` 控制升降频节奏,governor 有足够时间自然回落
 
 > 逐条改动历史见 [CHANGES.md](./CHANGES.md)。
