@@ -539,7 +539,8 @@ public:
         }
 
         if (minOk && maxOk) {
-            logger.Info("GPU频率已设置: min=%dMHz max=%dMHz", mhzMin, mhzMax);
+            logger.Info("GPU频率已设置: 目标 min=%dMHz max=%dMHz (实测 min=%dMHz)",
+                        mhzMin, mhzMax, readCurrentGpuMinMhz());
         } else {
             logger.Warn("GPU频率设置可能未完全生效: minOk=%d maxOk=%d",
                         minOk ? 1 : 0,
@@ -578,60 +579,82 @@ public:
         logger.Debug("GPU频率(画像): min=%dMHz max=%dMHz", mhzMin, mhzMax);
     }
 
+    // 回读当前 GPU 最低频(MHz)。OnePlus 等 ROM 的 GPU 管理会周期性覆盖 min,
+    // 守护据此判断是否被改动并立即纠正。读不到返回 -1。
+    int readCurrentGpuMinMhz() {
+        int v = utils.readInt("/sys/class/kgsl/kgsl-3d0/min_clock_mhz");  // 高通 kgsl, MHz
+        if (v > 0) return v;
+        static const char* hzPaths[] = {
+            "/sys/class/devfreq/3d00000.qcom,kgsl-3d0/min_freq",
+            "/sys/class/devfreq/5000000.qcom,kgsl-3d0/min_freq",
+            "/sys/class/kgsl/kgsl-3d0/devfreq/min_freq",
+        };
+        for (auto p : hzPaths) {
+            v = utils.readInt(p);
+            if (v > 0) return v / 1000000;  // Hz -> MHz
+        }
+        return -1;
+    }
+
+    void applyGpuFreqOnce(int mhzMin, int mhzMax) {
+        bool minOk = true, maxOk = true;
+        if (mhzMin > 0) {
+            minOk = tryGpuMinPaths(mhzMin);
+            if (minOk) latestGpuMinMhz.store(mhzMin);
+        }
+        if (mhzMax > 0) {
+            maxOk = tryGpuMaxPaths(mhzMax);
+            if (maxOk) latestGpuMaxMhz.store(mhzMax);
+        }
+        if ((!minOk && mhzMin > 0) || (!maxOk && mhzMax > 0)) {
+            bool pwrMaxDone = false, pwrMinDone = false;
+            tryGpuPwrlevel(maxOk ? 0 : mhzMax, minOk ? 0 : mhzMin, pwrMaxDone, pwrMinDone);
+            if (!maxOk && pwrMaxDone) maxOk = true;
+            if (!minOk && pwrMinDone) minOk = true;
+            if ((!minOk && mhzMin > 0) || (!maxOk && mhzMax > 0)) {
+                logger.Warn("GPU频率写入未完全生效 (min=%d max=%d, minOk=%d maxOk=%d) — 检查 root/SELinux/驱动支持",
+                            mhzMin, mhzMax, minOk ? 1 : 0, maxOk ? 1 : 0);
+            }
+        }
+    }
+
     void gpuFreqGuard() {
         if (!GpuFreq::enable) return;
 
-        logger.Info("GPU守护已启动，周期: 3秒");
+        logger.Info("GPU守护已启动，周期: 1秒(回读纠正)");
 
-        // 记录上轮目标值，未变化跳过写入；每 N 轮强制写一次防被其他进程覆盖
-        int lastWrittenMin = -1;
-        int lastWrittenMax = -1;
-        int forceCounter   = 0;
+        int lastTargetMin = -1;
+        int lastTargetMax = -1;
+        int forceCounter  = 0;
 
         while (!gpuGuardShouldExit.load()) {
             int mhzMin = Fastatoi(GpuFreq::min_freq.c_str());
             int mhzMax = Fastatoi(GpuFreq::max_freq.c_str());
 
             if (mhzMin <= 0 && mhzMax <= 0) {
-                for (int i = 0; i < 30 && !gpuGuardShouldExit.load(); i++) {
+                for (int i = 0; i < 10 && !gpuGuardShouldExit.load(); i++) {
                     utils.sleep_ms(100);
                 }
                 continue;
             }
 
-            {
-                bool needWrite = (mhzMin != lastWrittenMin) || (mhzMax != lastWrittenMax);
-                if (++forceCounter >= 5) { // 每 5 轮（15s）强制写一次，防被其他模块覆盖
-                    needWrite  = true;
-                    forceCounter = 0;
-                }
-                if (needWrite) {
-                    bool minOk = true, maxOk = true;
-                    if (mhzMin > 0) {
-                        minOk = tryGpuMinPaths(mhzMin);
-                        if (minOk) latestGpuMinMhz.store(mhzMin);
-                    }
-                    if (mhzMax > 0) {
-                        maxOk = tryGpuMaxPaths(mhzMax);
-                        if (maxOk) latestGpuMaxMhz.store(mhzMax);
-                    }
-                    if ((!minOk && mhzMin > 0) || (!maxOk && mhzMax > 0)) {
-                        bool pwrMaxDone = false, pwrMinDone = false;
-                        tryGpuPwrlevel(maxOk ? 0 : mhzMax, minOk ? 0 : mhzMin,
-                                       pwrMaxDone, pwrMinDone);
-                        if (!maxOk && pwrMaxDone) maxOk = true;
-                        if (!minOk && pwrMinDone) minOk = true;
-                        if ((!minOk && mhzMin > 0) || (!maxOk && mhzMax > 0)) {
-                            logger.Warn("GPU频率写入未完全生效 (min=%d max=%d, minOk=%d maxOk=%d) — 检查 root/SELinux/驱动支持",
-                                        mhzMin, mhzMax, minOk ? 1 : 0, maxOk ? 1 : 0);
-                        }
-                    }
-                    lastWrittenMin = mhzMin;
-                    lastWrittenMax = mhzMax;
-                }
+            bool targetChanged = (mhzMin != lastTargetMin) || (mhzMax != lastTargetMax);
+            // 回读真实 min: 被 ROM(风驰/perfd)改回则立刻纠正
+            bool drifted = false;
+            if (mhzMin > 0) {
+                int cur = readCurrentGpuMinMhz();
+                if (cur > 0 && cur != mhzMin) drifted = true;
+            }
+            bool force = (++forceCounter >= 10);  // ~10s 兜底强制一次
+            if (force) forceCounter = 0;
+
+            if (targetChanged || drifted || force) {
+                applyGpuFreqOnce(mhzMin, mhzMax);
+                lastTargetMin = mhzMin;
+                lastTargetMax = mhzMax;
             }
 
-            for (int i = 0; i < 30 && !gpuGuardShouldExit.load(); i++) {
+            for (int i = 0; i < 10 && !gpuGuardShouldExit.load(); i++) {
                 utils.sleep_ms(100);
             }
         }
