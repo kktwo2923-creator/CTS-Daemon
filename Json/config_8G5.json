@@ -1,15 +1,15 @@
 {
   "meta": {
-    "name": "CTS-8G3",
+    "name": "CTS-8E5",
     "version": "Pro",
     "author": "Ktwo",
     "loglevel": "INFO"
   },
   "Policy": {
     "c0": "0",
-    "c1": "2",
-    "c2": "5",
-    "c3": "7"
+    "c1": "6",
+    "c2": "-1",
+    "c3": "-1"
   },
   "Function": {
     "Cpuset": {
@@ -53,10 +53,10 @@
     "com.google.android.inputmethod.*",
     "android",
     "PopupWindow",
+    "com.omarea.vtools",
+    "bin.mt.plus.canary",
     "NotificationShade",
-    "com.omarea.vtools*",
     "com.omarea.gesture*",
-    "bin.mt.plus*",
     "com.ktwo.cts"
   ],
   "models": [
@@ -65,12 +65,12 @@
       "mode": "powersave",
       "is_game": false,
       "packages": [],
-      "freq_min_c0": "537600",
-      "freq_max_c0": "1689600",
-      "freq_min_c1": "537600",
-      "freq_max_c1": "1920000",
+      "freq_min_c0": "384000",
+      "freq_max_c0": "2200000",
+      "freq_min_c1": "768000",
+      "freq_max_c1": "2200000",
       "gpu_min_mhz": "160",
-      "gpu_max_mhz": "500",
+      "gpu_max_mhz": "400",
       "CoreOnline": {
         "Core0": "1",
         "Core1": "1",
@@ -81,20 +81,10 @@
         "Core6": "0",
         "Core7": "0"
       },
-      "freq_max_c2": "1708800",
-      "freq_min_c2": "537600",
-      "freq_max_c3": "1708800",
-      "freq_min_c3": "537600",
       "gov_c0": {
         "governor": "conservative"
       },
       "gov_c1": {
-        "governor": "conservative"
-      },
-      "gov_c2": {
-        "governor": "conservative"
-      },
-      "gov_c3": {
         "governor": "conservative"
       }
     },
@@ -104,11 +94,11 @@
       "is_game": false,
       "packages": [],
       "freq_min_c0": "537600",
-      "freq_max_c0": "1804800",
-      "freq_min_c1": "537600",
-      "freq_max_c1": "2246400",
+      "freq_max_c0": "2496000",
+      "freq_min_c1": "768000",
+      "freq_max_c1": "2880000",
       "gpu_min_mhz": "160",
-      "gpu_max_mhz": "800",
+      "gpu_max_mhz": "600",
       "CoreOnline": {
         "Core0": "1",
         "Core1": "1",
@@ -116,23 +106,13 @@
         "Core3": "1",
         "Core4": "1",
         "Core5": "1",
-        "Core6": "1",
-        "Core7": "1"
+        "Core6": "0",
+        "Core7": "0"
       },
-      "freq_max_c2": "2035200",
-      "freq_min_c2": "537600",
-      "freq_max_c3": "2035200",
-      "freq_min_c3": "537600",
       "gov_c0": {
         "governor": "walt"
       },
       "gov_c1": {
-        "governor": "walt"
-      },
-      "gov_c2": {
-        "governor": "walt"
-      },
-      "gov_c3": {
         "governor": "walt"
       }
     },
@@ -141,12 +121,12 @@
       "mode": "performance",
       "is_game": false,
       "packages": [],
-      "freq_min_c0": "768000",
-      "freq_max_c0": "1804800",
-      "freq_min_c1": "768000",
-      "freq_max_c1": "2515200",
+      "freq_min_c0": "787200",
+      "freq_max_c0": "2496000",
+      "freq_min_c1": "883200",
+      "freq_max_c1": "5000000",
       "gpu_min_mhz": "160",
-      "gpu_max_mhz": "1000",
+      "gpu_max_mhz": "1100",
       "CoreOnline": {
         "Core0": "1",
         "Core1": "1",
@@ -157,20 +137,10 @@
         "Core6": "1",
         "Core7": "1"
       },
-      "freq_max_c2": "2246400",
-      "freq_min_c2": "768000",
-      "freq_max_c3": "2304000",
-      "freq_min_c3": "768000",
       "gov_c0": {
         "governor": "walt"
       },
       "gov_c1": {
-        "governor": "walt"
-      },
-      "gov_c2": {
-        "governor": "walt"
-      },
-      "gov_c3": {
         "governor": "walt"
       }
     },
@@ -180,11 +150,11 @@
       "is_game": false,
       "packages": [],
       "freq_min_c0": "1200000",
-      "freq_max_c0": "3628800",
-      "freq_min_c1": "1228800",
-      "freq_max_c1": "4608000",
+      "freq_max_c0": "4000000",
+      "freq_min_c1": "1200000",
+      "freq_max_c1": "5000000",
       "gpu_min_mhz": "160",
-      "gpu_max_mhz": "1200",
+      "gpu_max_mhz": "1300",
       "CoreOnline": {
         "Core0": "1",
         "Core1": "1",
@@ -195,21 +165,11 @@
         "Core6": "1",
         "Core7": "1"
       },
-      "freq_max_c2": "5000000",
-      "freq_min_c2": "1200000",
-      "freq_max_c3": "5000000",
-      "freq_min_c3": "1200000",
       "gov_c0": {
-        "governor": "scx"
+        "governor": "hmbird"
       },
       "gov_c1": {
-        "governor": "scx"
-      },
-      "gov_c2": {
-        "governor": "scx"
-      },
-      "gov_c3": {
-        "governor": "scx"
+        "governor": "hmbird"
       }
     },
     {
@@ -240,7 +200,40 @@
         "com.tencent.KiHan",
         "com.tencent.jkchess",
         "com.tencent.mf.uam",
-        "com.tencent.nrc"
+        "com.tencent.nrc",
+        "com.tencent.tmgp.gnyx",
+        "com.tencent.tmgp.cf",
+        "com.tencent.lolm",
+        "com.netease.g93na",
+        "com.netease.aceracer",
+        "com.papegames.lyswx",
+        "com.kurogame.haru.hianime",
+        "com.miHoYo.cloudgames.ys",
+        "com.miHoYo.enterprise.NGHSoD",
+        "com.tencent.tmgp.WePop",
+        "com.netease.x19",
+        "com.netease.mrzh",
+        "com.tencent.tmgp.jdéjà",
+        "com.garena.game.kgvn",
+        "com.dts.freefireth",
+        "com.activision.callofduty.shooter",
+        "com.miHoYo.GenshinImpact",
+        "com.HoYoverse.hkrpgoversea",
+        "com.HoYoverse.Nap",
+        "com.proximabeta.mf.uamo",
+        "com.pubg.krmobile",
+        "com.rekoo.pubgm",
+        "com.vng.pubgmobile",
+        "com.ea.gp.fifamobile",
+        "com.supercell.brawlstars",
+        "com.mojang.minecraftpe",
+        "com.riotgames.league.wildrift",
+        "com.hottagames.yh.laohu",
+        "com.idreamsky.klbqm",
+        "com.netease.party",
+        "com.soulgamechst.majsoul",
+        "com.tencent.tmgp.codev",
+        "com.tencent.tmgp.nz"
       ],
       "freq_min_c0": "1200000",
       "freq_max_c0": "5000000",
@@ -258,21 +251,38 @@
         "Core6": "1",
         "Core7": "1"
       },
-      "freq_max_c2": "5000000",
-      "freq_min_c2": "1200000",
-      "freq_max_c3": "5000000",
-      "freq_min_c3": "1200000",
       "gov_c0": {
-        "governor": ""
+        "governor": "hmbird"
       },
       "gov_c1": {
-        "governor": ""
+        "governor": "hmbird"
+      }
+    },
+    {
+      "model_name": "game_lite",
+      "is_game": true,
+      "packages": [],
+      "freq_min_c0": "1200000",
+      "freq_max_c0": "5000000",
+      "freq_min_c1": "1200000",
+      "freq_max_c1": "5000000",
+      "gpu_min_mhz": "160",
+      "gpu_max_mhz": "1000",
+      "CoreOnline": {
+        "Core0": "1",
+        "Core1": "1",
+        "Core2": "1",
+        "Core3": "1",
+        "Core4": "1",
+        "Core5": "1",
+        "Core6": "1",
+        "Core7": "1"
       },
-      "gov_c2": {
-        "governor": ""
+      "gov_c0": {
+        "governor": "walt"
       },
-      "gov_c3": {
-        "governor": ""
+      "gov_c1": {
+        "governor": "walt"
       }
     },
     {
@@ -292,21 +302,17 @@
       ],
       "freq_min_c0": "384000",
       "freq_max_c0": "1400000",
-      "freq_min_c1": "384000",
+      "freq_min_c1": "768000",
       "freq_max_c1": "1400000",
       "gpu_min_mhz": "160",
-      "gpu_max_mhz": "600",
-      "freq_max_c2": "1400000",
-      "freq_min_c2": "384000",
-      "freq_max_c3": "1400000",
-      "freq_min_c3": "384000",
+      "gpu_max_mhz": "700",
       "CoreOnline": {
         "Core0": "1",
         "Core1": "1",
         "Core2": "1",
         "Core3": "1",
         "Core4": "1",
-        "Core5": "0",
+        "Core5": "1",
         "Core6": "0",
         "Core7": "0"
       },
@@ -314,12 +320,6 @@
         "governor": "walt"
       },
       "gov_c1": {
-        "governor": "walt"
-      },
-      "gov_c2": {
-        "governor": "walt"
-      },
-      "gov_c3": {
         "governor": "walt"
       }
     },
@@ -334,24 +334,24 @@
         "com.ss.android.lark"
       ],
       "freq_min_c0": "384000",
-      "freq_max_c0": "1804800",
-      "freq_min_c1": "384000",
-      "freq_max_c1": "2246400",
-      "freq_max_c2": "2035200",
-      "freq_min_c2": "384000",
-      "freq_max_c3": "2035200",
-      "freq_min_c3": "384000",
+      "freq_max_c0": "2496000",
+      "freq_min_c1": "768000",
+      "freq_max_c1": "2880000",
       "gpu_min_mhz": "160",
+      "CoreOnline": {
+        "Core0": "1",
+        "Core1": "1",
+        "Core2": "1",
+        "Core3": "1",
+        "Core4": "1",
+        "Core5": "1",
+        "Core6": "0",
+        "Core7": "0"
+      },
       "gov_c0": {
         "governor": "walt"
       },
       "gov_c1": {
-        "governor": "walt"
-      },
-      "gov_c2": {
-        "governor": "walt"
-      },
-      "gov_c3": {
         "governor": "walt"
       }
     },
@@ -365,25 +365,25 @@
         "com.tencent.weread"
       ],
       "freq_min_c0": "384000",
-      "freq_max_c0": "1689600",
-      "freq_min_c1": "384000",
-      "freq_max_c1": "1920000",
+      "freq_max_c0": "1555200",
+      "freq_min_c1": "537600",
+      "freq_max_c1": "1555200",
       "gpu_min_mhz": "160",
-      "gpu_max_mhz": "400",
-      "freq_max_c2": "1708800",
-      "freq_min_c2": "384000",
-      "freq_max_c3": "1708800",
-      "freq_min_c3": "384000",
+      "gpu_max_mhz": "500",
+      "CoreOnline": {
+        "Core0": "1",
+        "Core1": "1",
+        "Core2": "1",
+        "Core3": "1",
+        "Core4": "1",
+        "Core5": "1",
+        "Core6": "0",
+        "Core7": "0"
+      },
       "gov_c0": {
         "governor": "walt"
       },
       "gov_c1": {
-        "governor": "walt"
-      },
-      "gov_c2": {
-        "governor": "walt"
-      },
-      "gov_c3": {
         "governor": "walt"
       }
     },
@@ -399,25 +399,25 @@
         "com.apple.android.music"
       ],
       "freq_min_c0": "384000",
-      "freq_max_c0": "1689600",
+      "freq_max_c0": "1113600",
       "freq_min_c1": "384000",
-      "freq_max_c1": "1920000",
+      "freq_max_c1": "1300000",
       "gpu_min_mhz": "160",
       "gpu_max_mhz": "400",
-      "freq_max_c2": "1708800",
-      "freq_min_c2": "384000",
-      "freq_max_c3": "1708800",
-      "freq_min_c3": "384000",
+      "CoreOnline": {
+        "Core0": "1",
+        "Core1": "1",
+        "Core2": "1",
+        "Core3": "1",
+        "Core4": "1",
+        "Core5": "1",
+        "Core6": "0",
+        "Core7": "0"
+      },
       "gov_c0": {
         "governor": "walt"
       },
       "gov_c1": {
-        "governor": "walt"
-      },
-      "gov_c2": {
-        "governor": "walt"
-      },
-      "gov_c3": {
         "governor": "walt"
       }
     }

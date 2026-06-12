@@ -1,0 +1,541 @@
+{
+  "meta": {
+    "name": "CTS-D9300",
+    "version": "Pro",
+    "author": "Ktwo",
+    "loglevel": "INFO"
+  },
+  "Policy": {
+    "c0": "0",
+    "c1": "4",
+    "c2": "7",
+    "c3": "-1"
+  },
+  "Function": {
+    "Cpuset": {
+      "enable": "true",
+      "top_app": "0-7",
+      "foreground": "0-7",
+      "restricted": "0-5",
+      "system_background": "0-3",
+      "background": "0-2"
+    },
+    "LaunchBoost": {
+      "enable": "false"
+    },
+    "OfficialMode": {
+      "enable": "false"
+    },
+    "Scheduler": {
+      "enable": "true",
+      "sched_energy_aware": "true",
+      "sched_schedstats": "false",
+      "sched_nr_migrate": "32"
+    },
+    "SceneDetect": {
+      "enable": "false"
+    },
+    "AppProfile": {
+      "enable": "true"
+    }
+  },
+  "package_blacklist": [
+    "com.android.systemui",
+    "com.android.launcher*",
+    "com.miui.home",
+    "com.coloros.launcher",
+    "com.oneplus.launcher",
+    "com.oplus.launcher",
+    "com.baidu.input*",
+    "com.sohu.inputmethod.*",
+    "com.tencent.qqpinyin",
+    "com.iflytek.inputmethod*",
+    "com.google.android.inputmethod.*",
+    "android",
+    "PopupWindow",
+    "com.omarea.vtools",
+    "bin.mt.plus.canary",
+    "NotificationShade",
+    "com.omarea.gesture*",
+    "com.ktwo.cts"
+  ],
+  "models": [
+    {
+      "model_name": "powersave",
+      "mode": "powersave",
+      "is_game": false,
+      "packages": [],
+      "freq_min_c0": "384000",
+      "freq_max_c0": "1400000",
+      "freq_min_c1": "768000",
+      "freq_max_c1": "1800000",
+      "gpu_min_mhz": "0",
+      "gpu_max_mhz": "400",
+      "CoreOnline": {
+        "Core0": "1",
+        "Core1": "1",
+        "Core2": "1",
+        "Core3": "1",
+        "Core4": "1",
+        "Core5": "1",
+        "Core6": "1",
+        "Core7": "0"
+      },
+      "gov_c0": {
+        "governor": "sugov_ext"
+      },
+      "gov_c1": {
+        "governor": "sugov_ext"
+      },
+      "freq_min_c2": "768000",
+      "freq_max_c2": "1800000",
+      "gov_c2": {
+        "governor": "sugov_ext"
+      }
+    },
+    {
+      "model_name": "balance",
+      "mode": "balance",
+      "is_game": false,
+      "packages": [],
+      "freq_min_c0": "537600",
+      "freq_max_c0": "2000000",
+      "freq_min_c1": "768000",
+      "freq_max_c1": "2400000",
+      "gpu_min_mhz": "0",
+      "gpu_max_mhz": "600",
+      "CoreOnline": {
+        "Core0": "1",
+        "Core1": "1",
+        "Core2": "1",
+        "Core3": "1",
+        "Core4": "1",
+        "Core5": "1",
+        "Core6": "1",
+        "Core7": "0"
+      },
+      "gov_c0": {
+        "governor": "sugov_ext"
+      },
+      "gov_c1": {
+        "governor": "sugov_ext"
+      },
+      "freq_min_c2": "768000",
+      "freq_max_c2": "2600000",
+      "gov_c2": {
+        "governor": "sugov_ext"
+      }
+    },
+    {
+      "model_name": "performance",
+      "mode": "performance",
+      "is_game": false,
+      "packages": [],
+      "freq_min_c0": "787200",
+      "freq_max_c0": "2000000",
+      "freq_min_c1": "883200",
+      "freq_max_c1": "2850000",
+      "gpu_min_mhz": "0",
+      "gpu_max_mhz": "1100",
+      "CoreOnline": {
+        "Core0": "1",
+        "Core1": "1",
+        "Core2": "1",
+        "Core3": "1",
+        "Core4": "1",
+        "Core5": "1",
+        "Core6": "1",
+        "Core7": "1"
+      },
+      "gov_c0": {
+        "governor": "sugov_ext"
+      },
+      "gov_c1": {
+        "governor": "sugov_ext"
+      },
+      "freq_min_c2": "883200",
+      "freq_max_c2": "3250000",
+      "gov_c2": {
+        "governor": "sugov_ext"
+      }
+    },
+    {
+      "model_name": "fast",
+      "mode": "fast",
+      "is_game": false,
+      "packages": [],
+      "freq_min_c0": "480000",
+      "freq_max_c0": "2000000",
+      "freq_min_c1": "768000",
+      "freq_max_c1": "2850000",
+      "gpu_min_mhz": "0",
+      "gpu_max_mhz": "1300",
+      "CoreOnline": {
+        "Core0": "1",
+        "Core1": "1",
+        "Core2": "1",
+        "Core3": "1",
+        "Core4": "1",
+        "Core5": "1",
+        "Core6": "1",
+        "Core7": "1"
+      },
+      "gov_c0": {
+        "governor": "sugov_ext"
+      },
+      "gov_c1": {
+        "governor": "sugov_ext"
+      },
+      "freq_min_c2": "768000",
+      "freq_max_c2": "3250000",
+      "gov_c2": {
+        "governor": "sugov_ext"
+      }
+    },
+    {
+      "model_name": "game_heavy",
+      "is_game": true,
+      "packages": [
+        "com.tencent.tmgp.cod",
+        "com.miHoYo.Yuanshen",
+        "com.miHoYo.ys.mi",
+        "com.miHoYo.hkrpg",
+        "com.miHoYo.Nap",
+        "com.miHoYo.bh3",
+        "com.hypergryph.arknights",
+        "com.hypergryph.endfield",
+        "com.kurogame.mingchao",
+        "com.manjuu.promilia",
+        "com.hero.dna.gf",
+        "com.netease.dwrg",
+        "com.netease.l22",
+        "com.netease.nshm",
+        "com.netease.yyslscn",
+        "com.pi.czrxdfirst",
+        "com.tencent.KiHan",
+        "com.tencent.jkchess",
+        "com.tencent.mf.uam",
+        "com.tencent.nrc",
+        "com.netease.g93na",
+        "com.netease.aceracer",
+        "com.papegames.lyswx",
+        "com.kurogame.haru.hianime",
+        "com.miHoYo.cloudgames.ys",
+        "com.miHoYo.enterprise.NGHSoD",
+        "com.tencent.tmgp.WePop",
+        "com.netease.x19",
+        "com.netease.mrzh",
+        "com.tencent.tmgp.jdéjà",
+        "com.garena.game.kgvn",
+        "com.dts.freefireth",
+        "com.activision.callofduty.shooter",
+        "com.miHoYo.GenshinImpact",
+        "com.HoYoverse.hkrpgoversea",
+        "com.HoYoverse.Nap",
+        "com.proximabeta.mf.uamo",
+        "com.ea.gp.fifamobile",
+        "com.supercell.brawlstars",
+        "com.mojang.minecraftpe",
+        "com.hottagames.yh.laohu",
+        "com.idreamsky.klbqm",
+        "com.netease.party",
+        "com.pubg.imobile",
+        "com.soulgamechst.majsoul",
+        "com.tencent.lolm",
+        "com.tencent.tmgp.cf",
+        "com.tencent.tmgp.codev",
+        "com.tencent.tmgp.dfm",
+        "com.tencent.tmgp.nz",
+        "com.tencent.tmgp.pubgmhd",
+        "com.tencent.tmgp.sgame",
+        "com.tencent.tmgp.speedmobile"
+      ],
+      "freq_min_c0": "1200000",
+      "freq_max_c0": "5000000",
+      "freq_min_c1": "1200000",
+      "freq_max_c1": "5000000",
+      "gpu_min_mhz": "0",
+      "gpu_max_mhz": "1200",
+      "CoreOnline": {
+        "Core0": "1",
+        "Core1": "1",
+        "Core2": "1",
+        "Core3": "1",
+        "Core4": "1",
+        "Core5": "1",
+        "Core6": "1",
+        "Core7": "1"
+      },
+      "gov_c0": {
+        "governor": "sugov_ext"
+      },
+      "gov_c1": {
+        "governor": "sugov_ext"
+      },
+      "freq_min_c2": "1200000",
+      "freq_max_c2": "3250000",
+      "gov_c2": {
+        "governor": "sugov_ext"
+      }
+    },
+    {
+      "model_name": "game_lite",
+      "is_game": true,
+      "packages": [
+        "com.happyelements.AndroidAnimal",
+        "com.lemon.sjyz",
+        "com.popcap.pvz2cthd",
+        "com.tencent.tmgp.jjds",
+        "com.ywqc.xxnq",
+        "com.netease.dwrg.lite",
+        "com.tencent.tmgp.qz",
+        "com.kiloo.subwaysurf",
+        "com.tencent.gwgo",
+        "com.easygame2022.sheepmatchcn",
+        "com.tencent.tmgp.carrot3dj",
+        "com.qqgame.hlddz",
+        "com.tencent.peng",
+        "com.popcap.pvz2cthdxm",
+        "com.m4399.gamecenter",
+        "com.tencent.tmgp.gnyx",
+        "com.pubg.krmobile",
+        "com.rekoo.pubgm",
+        "com.vng.pubgmobile",
+        "com.riotgames.league.wildrift",
+        "com.netease.sky",
+        "com.tgc.sky.android"
+      ],
+      "freq_min_c0": "537600",
+      "freq_max_c0": "2000000",
+      "freq_min_c1": "768000",
+      "freq_max_c1": "2400000",
+      "gpu_min_mhz": "0",
+      "gpu_max_mhz": "660",
+      "CoreOnline": {
+        "Core0": "1",
+        "Core1": "1",
+        "Core2": "1",
+        "Core3": "1",
+        "Core4": "1",
+        "Core5": "1",
+        "Core6": "1",
+        "Core7": "1"
+      },
+      "gov_c0": {
+        "governor": "sugov_ext"
+      },
+      "gov_c1": {
+        "governor": "sugov_ext"
+      },
+      "freq_min_c2": "768000",
+      "freq_max_c2": "2600000",
+      "gov_c2": {
+        "governor": "sugov_ext"
+      }
+    },
+    {
+      "model_name": "video",
+      "is_game": false,
+      "packages": [
+        "com.ss.android.ugc.aweme",
+        "com.smile.gifmaker",
+        "com.kuaishou.nebula",
+        "tv.danmaku.bili",
+        "com.bilibili.app.in",
+        "com.tencent.qqlive",
+        "com.youku.phone",
+        "com.qiyi.video",
+        "com.netflix.mediaclient",
+        "com.ss.android.article.video",
+        "com.tencent.weishi",
+        "com.kuaishou.app",
+        "com.mgtv.tv",
+        "com.cmcc.cmvideo",
+        "com.sohu.sohuvideo",
+        "com.youku.kubao",
+        "com.disney.disneyplus",
+        "com.google.android.youtube",
+        "tv.danmaku.bilibilihd",
+        "com.ss.android.ugc.aweme.lite",
+        "com.hunantv.imgo.activity",
+        "com.phoenix.read",
+        "com.phoenix.read.oversea.gp",
+        "com.dz.hmjc",
+        "com.jz.xpdj",
+        "com.kwai.theater"
+      ],
+      "freq_min_c0": "384000",
+      "freq_max_c0": "1400000",
+      "freq_min_c1": "768000",
+      "freq_max_c1": "1400000",
+      "gpu_min_mhz": "0",
+      "gpu_max_mhz": "700",
+      "CoreOnline": {
+        "Core0": "1",
+        "Core1": "1",
+        "Core2": "1",
+        "Core3": "1",
+        "Core4": "1",
+        "Core5": "1",
+        "Core6": "1",
+        "Core7": "0"
+      },
+      "gov_c0": {
+        "governor": "sugov_ext"
+      },
+      "gov_c1": {
+        "governor": "sugov_ext"
+      },
+      "freq_min_c2": "768000",
+      "freq_max_c2": "1400000",
+      "gov_c2": {
+        "governor": "sugov_ext"
+      }
+    },
+    {
+      "model_name": "social",
+      "is_game": false,
+      "packages": [
+        "com.tencent.mm",
+        "com.tencent.mobileqq",
+        "com.tencent.tim",
+        "com.alibaba.android.rimet",
+        "com.ss.android.lark",
+        "com.sina.weibo",
+        "com.xingin.xhs",
+        "com.zhihu.android",
+        "com.baidu.tieba",
+        "com.immomo.momo",
+        "com.soul.android",
+        "cn.soulapp.android",
+        "com.tencent.wework",
+        "com.yixin.b",
+        "com.p1.mobile.putong",
+        "com.douban.frodo",
+        "com.ruguoapp.jike",
+        "com.hupu.games"
+      ],
+      "freq_min_c0": "384000",
+      "freq_max_c0": "2000000",
+      "freq_min_c1": "768000",
+      "freq_max_c1": "2400000",
+      "gpu_min_mhz": "0",
+      "CoreOnline": {
+        "Core0": "1",
+        "Core1": "1",
+        "Core2": "1",
+        "Core3": "1",
+        "Core4": "1",
+        "Core5": "1",
+        "Core6": "1",
+        "Core7": "0"
+      },
+      "gov_c0": {
+        "governor": "sugov_ext"
+      },
+      "gov_c1": {
+        "governor": "sugov_ext"
+      },
+      "freq_min_c2": "768000",
+      "freq_max_c2": "2600000",
+      "gov_c2": {
+        "governor": "sugov_ext"
+      }
+    },
+    {
+      "model_name": "reading",
+      "is_game": false,
+      "packages": [
+        "io.legado.app.release",
+        "com.kingsoft.moffice_pro",
+        "com.tencent.weread",
+        "com.qidian.QDReader",
+        "com.qq.reader",
+        "com.dragon.read",
+        "com.kmxs.reader",
+        "com.chaozh.iReaderFree",
+        "com.baidu.yuedu",
+        "com.zongheng.reader",
+        "com.jingdong.app.reader",
+        "com.unicom.zworeader",
+        "com.xs.fm"
+      ],
+      "freq_min_c0": "384000",
+      "freq_max_c0": "1555200",
+      "freq_min_c1": "537600",
+      "freq_max_c1": "1555200",
+      "gpu_min_mhz": "0",
+      "gpu_max_mhz": "500",
+      "CoreOnline": {
+        "Core0": "1",
+        "Core1": "1",
+        "Core2": "1",
+        "Core3": "1",
+        "Core4": "1",
+        "Core5": "1",
+        "Core6": "1",
+        "Core7": "0"
+      },
+      "gov_c0": {
+        "governor": "sugov_ext"
+      },
+      "gov_c1": {
+        "governor": "sugov_ext"
+      },
+      "freq_min_c2": "537600",
+      "freq_max_c2": "1555200",
+      "gov_c2": {
+        "governor": "sugov_ext"
+      }
+    },
+    {
+      "model_name": "music",
+      "is_game": false,
+      "packages": [
+        "com.netease.cloudmusic",
+        "com.tencent.qqmusic",
+        "cn.kuwo.player",
+        "com.kugou.android",
+        "com.spotify.music",
+        "com.apple.android.music",
+        "com.luna.music",
+        "com.migu.music",
+        "fm.xiami.main",
+        "com.ting.mp3.android",
+        "com.ximalaya.ting.android",
+        "com.lizhi.fm",
+        "fm.qingting.qtradio",
+        "cmccwm.mobilemusic",
+        "com.ximalaya.ting.lite",
+        "com.yibasan.lizhifm"
+      ],
+      "freq_min_c0": "384000",
+      "freq_max_c0": "1113600",
+      "freq_min_c1": "384000",
+      "freq_max_c1": "1300000",
+      "gpu_min_mhz": "0",
+      "gpu_max_mhz": "400",
+      "CoreOnline": {
+        "Core0": "1",
+        "Core1": "1",
+        "Core2": "1",
+        "Core3": "1",
+        "Core4": "1",
+        "Core5": "1",
+        "Core6": "1",
+        "Core7": "0"
+      },
+      "gov_c0": {
+        "governor": "sugov_ext"
+      },
+      "gov_c1": {
+        "governor": "sugov_ext"
+      },
+      "freq_min_c2": "384000",
+      "freq_max_c2": "1300000",
+      "gov_c2": {
+        "governor": "sugov_ext"
+      }
+    }
+  ]
+}

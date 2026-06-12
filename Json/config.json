@@ -54,10 +54,10 @@
     "android",
     "PopupWindow",
     "NotificationShade",
-    "com.ktwo.cts",
     "com.omarea.vtools*",
     "com.omarea.gesture*",
-    "bin.mt.plus*"
+    "bin.mt.plus*",
+    "com.ktwo.cts"
   ],
   "models": [
     {
@@ -148,7 +148,6 @@
       "model_name": "fast",
       "mode": "fast",
       "is_game": false,
-      "keep_alive": true,
       "packages": [],
       "freq_min_c0": "1200000",
       "freq_max_c0": "3628800",
@@ -258,10 +257,10 @@
         "Core7": "0"
       },
       "gov_c0": {
-        "governor": "conservative"
+        "governor": "walt"
       },
       "gov_c1": {
-        "governor": "conservative"
+        "governor": "walt"
       }
     },
     {
@@ -280,10 +279,10 @@
       "freq_max_c1": "2880000",
       "gpu_min_mhz": "160",
       "gov_c0": {
-        "governor": "conservative"
+        "governor": "walt"
       },
       "gov_c1": {
-        "governor": "conservative"
+        "governor": "walt"
       }
     },
     {
@@ -302,10 +301,10 @@
       "gpu_min_mhz": "160",
       "gpu_max_mhz": "500",
       "gov_c0": {
-        "governor": "conservative"
+        "governor": "walt"
       },
       "gov_c1": {
-        "governor": "conservative"
+        "governor": "walt"
       }
     },
     {
@@ -326,10 +325,10 @@
       "gpu_min_mhz": "160",
       "gpu_max_mhz": "400",
       "gov_c0": {
-        "governor": "conservative"
+        "governor": "walt"
       },
       "gov_c1": {
-        "governor": "conservative"
+        "governor": "walt"
       }
     }
   ]

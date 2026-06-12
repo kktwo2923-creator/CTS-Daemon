@@ -123,6 +123,7 @@ public:
         // [Fix] 顺序: 先写 governor 再写 min/max。切换调速器时内核可能重置频率,
         //       故频率必须在 governor 之后写。governor 用阻塞写(O_NONBLOCK 会 EAGAIN 静默失败)。
         //       值为空则跳过该项(如 fast 档 max 留空=不限上限交风驰)。
+        bool govOk = true;   // [Fix] 提到块外, 与频率写入结果一起决定是否更新去重缓存
         if (!Governor.empty()) {
             FastSnprintf(path, sizeof(path), GovernorPath, Policy);
             bool ok = utils.FileWriteBlocking(path, Governor);
@@ -141,23 +142,29 @@ public:
             }
             if (ok) logger.Info("CPU簇: %d 调速器: %s", Policy, Governor.c_str());
             else    logger.Warn("CPU簇: %d 调速器写入失败: %s (节点不可写或调速器不存在)", Policy, Governor.c_str());
+            govOk = ok;
         }
 
+        // [Fix] 频率改用阻塞写并捕获返回值。旧实现用非阻塞 FileWrite(void, 无状态),
+        //   写失败也照样更新 last* 去重缓存 → 同值重试被永久跳过, 频率停在内核默认。
+        bool freqOk = true;
         if (!MinFreq.empty()) {
             FastSnprintf(path, sizeof(path), MinFreqPath, Policy);
-            utils.FileWrite(path, MinFreq);
+            if (!utils.FileWriteBlocking(path, MinFreq)) freqOk = false;
             logger.Debug("CPU簇: %d 最小频率: %s", Policy, MinFreq.c_str());
         }
 
         if (!MaxFreq.empty()) {
             FastSnprintf(path, sizeof(path), MaxFreqPath, Policy);
-            utils.FileWrite(path, MaxFreq);
+            if (!utils.FileWriteBlocking(path, MaxFreq)) freqOk = false;
             logger.Debug("CPU簇: %d 最大频率: %s", Policy, MaxFreq.c_str());
         } else {
             logger.Debug("CPU簇: %d 最大频率: 留空(交风驰接管)", Policy);
         }
 
-        if (cluster >= 0) {
+        // [Fix] 仅当 governor 与频率均写入成功时才更新去重缓存; 任一失败则保持缓存为旧值,
+        //   让下一轮(守护周期/画像切换)用相同目标值时不被去重跳过, 能够重试。
+        if (cluster >= 0 && govOk && freqOk) {
             lastMinFreq[cluster]  = MinFreq;
             lastMaxFreq[cluster]  = MaxFreq;
             lastGovernor[cluster] = Governor;

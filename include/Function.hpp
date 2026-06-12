@@ -135,7 +135,13 @@ public:
         return true;
     }
 
-    void setKgslGovernorPerformance() {
+    // [Fix] 旧实现 setKgslGovernorPerformance() 在每次写 GPU min/max 前把 kgsl devfreq
+    //   governor 强制设为 "performance",会把 GPU 钉死在 max_freq、彻底废掉 DVFS——
+    //   与 [min,max] 区间调频和省电目标直接矛盾(min=160 形同虚设),且 gpuFreqGuard 每 15s
+    //   还会强化一次。现改为:仅当 governor 当前被钉在 "performance"(可能是旧版本或某些
+    //   ROM/游戏模式残留)时,恢复为支持区间调频的 Adreno 默认 governor msm-adreno-tz;
+    //   其余情况一律保持系统现状不动。这样写入 min_freq/max_freq 后 GPU 仍能在区间内 DVFS。
+    void ensureKgslDvfsGovernor() {
         const char* govPath = "/sys/class/kgsl/kgsl-3d0/devfreq/governor";
 
         if (access(govPath, F_OK) != 0) return;
@@ -143,30 +149,29 @@ public:
         char curGov[64] = {0};
 
         int fd = open(govPath, O_RDONLY | O_CLOEXEC);
-        if (fd >= 0) {
-            ssize_t n = read(fd, curGov, sizeof(curGov) - 1);
-            close(fd);
+        if (fd < 0) return;
+        ssize_t n = read(fd, curGov, sizeof(curGov) - 1);
+        close(fd);
+        if (n <= 0) return;
 
-            if (n > 0) {
-                for (int i = 0; curGov[i]; i++) {
-                    if (curGov[i] == '\n' || curGov[i] == '\r') {
-                        curGov[i] = '\0';
-                        break;
-                    }
-                }
-
-                if (strstr(curGov, "performance")) {
-                    return;
-                }
+        for (int i = 0; curGov[i]; i++) {
+            if (curGov[i] == '\n' || curGov[i] == '\r') {
+                curGov[i] = '\0';
+                break;
             }
         }
+
+        // 只有当前被钉死在 performance 时才介入恢复 DVFS,否则尊重系统/用户现状
+        if (!strstr(curGov, "performance")) return;
 
         chmod(govPath, 0666);
 
         int fdw = open(govPath, O_WRONLY | O_CLOEXEC);
         if (fdw >= 0) {
-            write(fdw, "performance\n", 12);
+            const char gov[] = "msm-adreno-tz\n";
+            write(fdw, gov, sizeof(gov) - 1);
             close(fdw);
+            logger.Debug("GPU governor 由 performance 恢复为 msm-adreno-tz(启用区间 DVFS)");
         }
     }
 
@@ -265,7 +270,7 @@ public:
         if (access(path, F_OK) != 0) return false;
 
         if (needsGov) {
-            setKgslGovernorPerformance();
+            ensureKgslDvfsGovernor();
         }
 
         long long valueToWriteLL = isHz
@@ -423,7 +428,12 @@ public:
         return false;
     }
 
-    bool tryGpuPwrlevel(int mhzMax, int mhzMin) {
+    // [Fix] 出参 maxDone/minDone 分别报告 max/min 是否真正写入成功(未请求的字段视为已完成),
+    //   避免旧实现"min 或 max 任一成功就整体返回 true"导致调用方把两个都误标成功、掩盖一半失败。
+    bool tryGpuPwrlevel(int mhzMax, int mhzMin, bool& maxDone, bool& minDone) {
+        maxDone = (mhzMax <= 0);
+        minDone = (mhzMin <= 0);
+
         const char* availPath  = "/sys/class/kgsl/kgsl-3d0/gpu_available_frequencies";
         const char* numPwrPath = "/sys/class/kgsl/kgsl-3d0/num_pwrlevels";
         const char* maxPwrPath = "/sys/class/kgsl/kgsl-3d0/max_pwrlevel";
@@ -462,14 +472,14 @@ public:
 
         if (freqCount <= 0) return false;
 
-        bool success = false;
-
         if (mhzMax > 0) {
             long long targetHzLL = static_cast<long long>(mhzMax) * 1000000LL;
-            if (targetHzLL > 2147483647LL) return false;
+            if (targetHzLL > 2147483647LL) return maxDone && minDone;
 
             int targetHz = static_cast<int>(targetHzLL);
-            int maxPwr = 0;
+            // [Fix] 默认取最受限的最低档(freqCount-1)而非 0(最高档)。旧默认 0 在请求的 max
+            //   低于全部可用频率时会写 max_pwrlevel=0 = 解除上限,与"限制最高频"语义完全相反。
+            int maxPwr = freqCount - 1;
             int bestDiff = 0x7FFFFFFF;
 
             for (int i = 0; i < freqCount; i++) {
@@ -487,13 +497,13 @@ public:
             int pwrLen = FastSnprintf(pwrBuf, sizeof(pwrBuf), "%d", maxPwr);
 
             if (writeSysfsLocked(maxPwrPath, pwrBuf, pwrLen)) {
-                success = true;
+                maxDone = true;
             }
         }
 
         if (mhzMin > 0) {
             long long targetHzLL = static_cast<long long>(mhzMin) * 1000000LL;
-            if (targetHzLL > 2147483647LL) return false;
+            if (targetHzLL > 2147483647LL) return maxDone && minDone;
 
             int targetHz = static_cast<int>(targetHzLL);
             int minPwr = freqCount - 1;
@@ -514,11 +524,11 @@ public:
             int pwrLen = FastSnprintf(pwrBuf, sizeof(pwrBuf), "%d", minPwr);
 
             if (writeSysfsLocked(minPwrPath, pwrBuf, pwrLen)) {
-                success = true;
+                minDone = true;
             }
         }
 
-        return success;
+        return maxDone && minDone;
     }
 
     void gpuFreqControl() {
@@ -545,10 +555,12 @@ public:
         }
 
         if ((!minOk && mhzMin > 0) || (!maxOk && mhzMax > 0)) {
-            if (tryGpuPwrlevel(mhzMax, mhzMin)) {
-                if (!minOk) minOk = true;
-                if (!maxOk) maxOk = true;
-            }
+            // [Fix] 只对真正失败的字段走 pwrlevel 兜底(已成功的传 0=不再触碰),
+            //   并按 max/min 各自的写入结果分别标记成功,不再一刀切。
+            bool pwrMaxDone = false, pwrMinDone = false;
+            tryGpuPwrlevel(maxOk ? 0 : mhzMax, minOk ? 0 : mhzMin, pwrMaxDone, pwrMinDone);
+            if (!maxOk && pwrMaxDone) maxOk = true;
+            if (!minOk && pwrMinDone) minOk = true;
         }
 
         if (minOk && maxOk) {
@@ -585,7 +597,8 @@ public:
         }
 
         if ((!minOk && mhzMin > 0) || (!maxOk && mhzMax > 0)) {
-            tryGpuPwrlevel(mhzMax, mhzMin);
+            bool pwrMaxDone = false, pwrMinDone = false;
+            tryGpuPwrlevel(maxOk ? 0 : mhzMax, minOk ? 0 : mhzMin, pwrMaxDone, pwrMinDone);
         }
 
         logger.Debug("GPU频率(画像): min=%dMHz max=%dMHz", mhzMin, mhzMax);
@@ -634,11 +647,15 @@ public:
                         if (maxOk) latestGpuMaxMhz.store(mhzMax);
                     }
                     if ((!minOk && mhzMin > 0) || (!maxOk && mhzMax > 0)) {
-                        bool pwrOk = tryGpuPwrlevel(mhzMax, mhzMin);
+                        bool pwrMaxDone = false, pwrMinDone = false;
+                        tryGpuPwrlevel(maxOk ? 0 : mhzMax, minOk ? 0 : mhzMin,
+                                       pwrMaxDone, pwrMinDone);
+                        if (!maxOk && pwrMaxDone) maxOk = true;
+                        if (!minOk && pwrMinDone) minOk = true;
                         // [Fix] 三条路径都失败 → 明确告警，方便用户排查权限/驱动问题
-                        if (!pwrOk) {
-                            logger.Warn("GPU频率写入全部失败 (min=%d max=%d) — 检查 root/SELinux/驱动支持",
-                                        mhzMin, mhzMax);
+                        if ((!minOk && mhzMin > 0) || (!maxOk && mhzMax > 0)) {
+                            logger.Warn("GPU频率写入未完全生效 (min=%d max=%d, minOk=%d maxOk=%d) — 检查 root/SELinux/驱动支持",
+                                        mhzMin, mhzMax, minOk ? 1 : 0, maxOk ? 1 : 0);
                         }
                     }
                     lastWrittenMin = mhzMin;
