@@ -386,6 +386,9 @@ public:
 
     void applyAllConfig() {
         std::lock_guard<std::recursive_mutex> lk(applyMtx);
+        // 配置变更(改频率/换模式/恢复默认)必清去重缓存: 否则若 sysfs 已被外部(如提频)抬高、
+        // 而缓存仍是旧低值, 恢复同值会被判"未变"跳过 → 高频留住降不回 ("恢复配置也不生效")。
+        invalidateFreqCache();
         applyCurrentMode();
         SchedParam();
         online();
