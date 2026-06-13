@@ -786,15 +786,25 @@ public:
         evalForegroundOnce(true);
     }
 
+    // App 无障碍服务是否正在提供新鲜的前台推送(此时检测准确, 不需保活兜底)
+    bool appPushActive() {
+        std::lock_guard<std::mutex> lk(pushMtx_);
+        return !pushedTopApp_.empty() && nowMs() - lastPushMs_.load() < kPushTtlMs;
+    }
+
     // fresh=true: 强制取最新前台（事件驱动路径用，避免 TTL 缓存返回旧包名误判未切换）
     // fresh=false: 允许用缓存（空闲复查/低频路径，省电）
     void evalForegroundOnce(bool fresh) {
         // 串行化"取前台 + 改 lastTopApp/currentMatch + 应用"，防两线程并发写 sysfs
         std::lock_guard<std::recursive_mutex> lk(applyMtx);
 
-        // 保活：检测到游戏/keep_alive 包后, 只要其进程存活就维持画像, 无视前台变化
+        // App 无障碍能准确识别全屏主应用(小窗也取最大窗口, 不抢), 此时关掉保活, 纯跟随前台更准
+        // (真离开游戏立即切档)。无 App 推送(dumpsys 兜底)时仍启用保活, 防小窗误判掉档。
+        const bool pushMode = appPushActive();
+
+        // 保活(仅 dumpsys 兜底模式)：检测到游戏/keep_alive 包后, 只要其进程存活就维持画像
         // (小窗/分屏/输入法/通知栏/回桌面/切别的App 都不掉), 直到游戏进程退出才解除。
-        if (!heldPkg.empty()) {
+        if (!pushMode && !heldPkg.empty()) {
             if (utils.isPackageRunning(heldPkg.c_str())) {
                 if (!fresh) return;   // 空闲复查: 进程在就维持, 不取前台
                 // 前台事件: 仅当切到"另一个"保活类 App 才移交, 否则维持(不打日志)
@@ -813,6 +823,9 @@ public:
                 lastTopApp.clear();
                 applyWithProfile();   // 立即落基础, 防去重跳过致高频残留
             }
+        } else if (!heldPkg.empty()) {
+            // 已切到 App 检测模式但仍残留保活 → 解除, 之后纯跟随前台
+            heldPkg.clear();
         }
 
         std::string pkg = getForegroundPkg(fresh);
@@ -826,8 +839,8 @@ public:
                         ? -1 : Config::AppProfile::findMatchingModel(pkg.c_str());
 
         // 建立保活须在去重之外: 重载清掉 heldPkg 后 match 可能不变(被去重跳过), 仍要恢复持有。
-        // 仅真实匹配到游戏/保活画像时建立(省电兜底不建立保活)。
-        if (matched >= 0) {
+        // 仅 dumpsys 兜底模式 + 真实匹配到游戏/保活画像时建立; App 检测模式不建保活(纯跟随前台)。
+        if (!pushMode && matched >= 0) {
             const auto& mdl = Config::AppProfile::Models[matched];
             if (mdl.isGame || mdl.keepAlive) heldPkg = pkg;
         }
@@ -846,8 +859,8 @@ public:
             Config::AppProfile::currentMatch.store(newMatch);
             if (matched >= 0) {
                 const auto& mdl = Config::AppProfile::Models[matched];
-                logger.Info("前台: %s → 档[%s]%s", pkg.c_str(),
-                            mdl.modelName.c_str(), mdl.isGame ? " (游戏, 保活至退出)" : "");
+                logger.Info("前台: %s → 档[%s]%s", pkg.c_str(), mdl.modelName.c_str(),
+                            mdl.isGame ? (pushMode ? " (游戏)" : " (游戏, 保活至退出)") : "");
             } else {
                 logger.Info("前台: %s → %s", pkg.c_str(),
                             toPowersave ? "省电(无匹配/黑名单)" : "基础档(跟随全局)");
