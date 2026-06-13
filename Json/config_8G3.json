@@ -263,16 +263,16 @@
       "freq_max_c3": "5000000",
       "freq_min_c3": "1200000",
       "gov_c0": {
-        "governor": "scx"
+        "governor": ""
       },
       "gov_c1": {
-        "governor": "scx"
+        "governor": ""
       },
       "gov_c2": {
-        "governor": "scx"
+        "governor": ""
       },
       "gov_c3": {
-        "governor": "scx"
+        "governor": ""
       }
     },
     {

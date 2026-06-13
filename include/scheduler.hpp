@@ -220,7 +220,7 @@ public:
     }
 
     // CPU 上线是异步 hotplug，写 online=1 后 affected_cpus 可能未更新，轮询等待再写 governor
-    void waitClusterReady(int policy, int timeoutMs = 80) {
+    void waitClusterReady(int policy, int timeoutMs = 200) {
         if (policy < 0) return;
         char p[256];
         FastSnprintf(p, sizeof(p),
@@ -671,12 +671,50 @@ public:
         return drift;
     }
 
+    // 游戏档下把"参考簇"(policy0, ROM 实际写入的风驰)的调速器复制到配置留空的其它在线簇。
+    // 根因: 省电关大核 → 进游戏大核迟上线, 错过 ROM 一次性风驰, 以默认 walt 上线; 留空时 CTS 不写。
+    // 周期性(每 enforce tick)读参考簇 → 镜像到留空簇, 无竞态, 纯跟随 ROM 实际选择(不写死 hmbird/scx)。
+    // 仅作用于 isGame 且该簇配置 governor 为空; 显式配置的簇不动。返回是否写入。
+    bool propagateGameGovernor() {
+        std::lock_guard<std::recursive_mutex> lk(applyMtx);
+        int cur = Config::AppProfile::currentMatch.load();
+        if (cur < 0 || cur >= Config::AppProfile::modelCount) return false;
+        const auto& m = Config::AppProfile::Models[cur];
+        if (!m.isGame) return false;
+        int refP = Config::Policy::CpuPolicy[0];
+        if (refP < 0) return false;
+        char ref[64], path[256];
+        FastSnprintf(path, sizeof(path), GovernorPath, refP);
+        if (!readNodeTrim(path, ref, sizeof(ref)) || !ref[0]) return false;
+        bool wrote = false;
+        for (int i = 1; i < Config::kClusterCount; i++) {
+            int p = Config::Policy::CpuPolicy[i];
+            if (p == -1) continue;
+            if (!m.Governor[i].empty()) continue;   // 配置显式指定 → 交给常规写入, 不镜像
+            char aff[256];
+            FastSnprintf(aff, sizeof(aff),
+                         "/sys/devices/system/cpu/cpufreq/policy%d/affected_cpus", p);
+            if (!utils.FileStartsWithDigit(aff)) continue;   // 离线簇跳过
+            char cur2[64];
+            FastSnprintf(path, sizeof(path), GovernorPath, p);
+            if (readNodeTrim(path, cur2, sizeof(cur2)) && strcmp(cur2, ref) != 0) {
+                if (utils.FileWriteBlocking(path, ref)) {
+                    logger.Info("游戏档: 簇%d 调速器跟随参考簇 → %s", p, ref);
+                    wrote = true;
+                }
+            }
+        }
+        return wrote;
+    }
+
     // 实时监测线程: 周期回读纠正; 稳定久了退避省电, 一旦被改写立即回 2s 紧盯
     void cpuEnforceTask() {
         if (waitStop(6000)) return;   // 等启动稳定
         int interval = 2000, stable = 0;
         while (!shouldExit_.load()) {
-            if (enforceState()) { interval = 2000; stable = 0; }
+            bool changed = enforceState();
+            if (propagateGameGovernor()) changed = true;   // 游戏档留空簇跟随 ROM 风驰
+            if (changed) { interval = 2000; stable = 0; }
             else if (++stable >= 5) interval = 5000;
             if (waitStop(interval)) break;
         }
