@@ -45,7 +45,6 @@ private:
 
     std::string lastTopApp;          // 上一次前台应用包名（用于画像切换去重）
     long long   lastGameCpusetFixMs = 0;  // 游戏档 cpuset 矫正节流: 上次矫正时刻(ms), 防 ping-pong
-    long long   blacklistSinceMs    = 0;  // 黑名单前台开始停留时刻(ms), 0=当前前台不在黑名单
     std::string heldPkg;             // 正在保活的游戏/保活画像包名(进程存活则维持画像), 空=未保活
 
     static long long nowMs() {
@@ -592,8 +591,7 @@ public:
         if (strcmp(now, desired) == 0) return;   // 已是全核 → 幂等不写
 
         constexpr long long kFixMinMs = 1000;    // 节流：最多每秒矫正一次，防 ping-pong
-        long long t = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count();
+        long long t = nowMs();
         if (t - lastGameCpusetFixMs < kFixMinMs) return;
         lastGameCpusetFixMs = t;
 
@@ -623,29 +621,16 @@ public:
         std::string pkg = fresh ? utils.getTopApp() : utils.getTopAppCached(2500);
         if (pkg.empty() || pkg == "null") return;
 
-        // 黑名单前台(launcher/systemui/输入法等)且非保活态：持续停留(回桌面)→ 退基础档，
-        // 防普通画像残留高频。(保活画像在上面已 return，不会到这。)
-        if (Config::AppProfile::isBlacklisted(pkg.c_str())) {
-            constexpr long long kBlacklistHoldMs = 800;
-            long long t = nowMs();
-            if (blacklistSinceMs == 0) { blacklistSinceMs = t; return; }
-            if (t - blacklistSinceMs < kBlacklistHoldMs) return;
-            if (Config::AppProfile::currentMatch.load() >= 0) {
-                Config::AppProfile::currentMatch.store(-1);
-                lastTopApp.clear();
-                logger.Info("前台停留黑名单(%s) → 退回基础档", pkg.c_str());
-                applyWithProfile();
-            }
-            blacklistSinceMs = 0;
-            return;
-        }
-        blacklistSinceMs = 0;
-
         if (pkg == lastTopApp) return;
         lastTopApp = pkg;
-        int newMatch = Config::AppProfile::findMatchingModel(pkg.c_str());
 
-        // 去重：新匹配画像与当前相同则跳过，不重复刷 sysfs
+        // 黑名单前台(launcher/systemui/输入法等)→ 跟随全局(基础档),与"无匹配画像"同一条路。
+        // 游戏/保活画像由上面 heldPkg 维持到进程退出,不会走到这里。
+        int newMatch = Config::AppProfile::isBlacklisted(pkg.c_str())
+                         ? -1
+                         : Config::AppProfile::findMatchingModel(pkg.c_str());
+
+        // 去重：与当前画像相同则跳过，不重复刷 sysfs
         int oldMatch = Config::AppProfile::currentMatch.load();
         if (newMatch != oldMatch) {
             Config::AppProfile::currentMatch.store(newMatch);
@@ -656,7 +641,7 @@ public:
                 // 游戏/保活画像 → 记下包名,持续保活直到该进程退出
                 if (mdl.isGame || mdl.keepAlive) heldPkg = pkg;
             } else {
-                logger.Info("前台: %s → 默认档(无匹配画像)", pkg.c_str());
+                logger.Info("前台: %s → 默认档(跟随全局)", pkg.c_str());
             }
             applyWithProfile();
         }
@@ -686,12 +671,10 @@ public:
         evalForegroundOnce(true);
 
         while (!shouldExit_.load()) {
-            // 有待退档判定(blacklistSinceMs 计时中)时快轮询，让回桌面更跟手；平时维持 4s 省电
-            int idleMs = (blacklistSinceMs != 0) ? 500 : kPollIdleMs;
-            int ev = waitTopAppEvent(fd, wd, idleMs);
+            int ev = waitTopAppEvent(fd, wd, kPollIdleMs);
             if (shouldExit_.load()) break;
             if (ev < 0) {
-                if (waitStop(idleMs)) break;
+                if (waitStop(kPollIdleMs)) break;
                 evalForegroundOnce(true);
                 correctGameTopAppCpus();
                 continue;
