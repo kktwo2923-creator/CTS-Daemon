@@ -45,9 +45,7 @@ private:
 
     std::string lastTopApp;          // 上一次前台应用包名（用于画像切换去重）
     long long   lastGameCpusetFixMs = 0;  // 游戏档 cpuset 矫正节流: 上次矫正时刻(ms), 防 ping-pong
-    std::string heldPkg;             // 正在保活的游戏/保活画像包名, 空=未保活
-    long long   heldLeftFgMs = 0;    // 保活 App 离开前台的时刻(ms), 0=仍在前台/可见
-    static constexpr long long kHeldGraceMs = 60000;  // 离开前台后保活宽限 60s(快速切回不掉档)
+    std::string heldPkg;             // 正在保活的游戏/保活画像包名(进程存活则维持), 空=未保活
 
     static long long nowMs() {
         return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -612,8 +610,6 @@ public:
         int cur = Config::AppProfile::currentMatch.load();
         if (cur < 0 || cur >= Config::AppProfile::modelCount
             || !Config::AppProfile::Models[cur].isGame) return;
-        // 游戏已离开前台(保活宽限期) → 不再强掰桌面/他 App 的 cpuset 到全核
-        if (!heldPkg.empty() && heldLeftFgMs != 0) return;
 
         // 目标全核范围: 优先用配置的 top_app(游戏档应为 0-7), 否则用当前全部在线 CPU。
         char desired[64] = { 0 };
@@ -636,7 +632,7 @@ public:
         utils.FileWrite("/dev/cpuset/cpus", desired);
         utils.FileWrite("/dev/cpuset/top-app/cpus", desired);
         utils.FileWrite("/dev/cpuset/foreground/cpus", desired);
-        logger.Info("游戏档: top-app cpuset 被收窄(%s) → 矫正回 %s", now, desired);
+        logger.Debug("游戏档: top-app cpuset 被收窄(%s) → 矫正回 %s", now, desired);
     }
 
     // fresh=true: 强制取最新前台（事件驱动路径用，避免 TTL 缓存返回旧包名误判未切换）
@@ -645,73 +641,53 @@ public:
         // 串行化"取前台 + 改 lastTopApp/currentMatch + 应用"，防两线程并发写 sysfs
         std::lock_guard<std::recursive_mutex> lk(applyMtx);
 
-        std::string pkg = fresh ? utils.getTopApp() : utils.getTopAppCached(2500);
-        bool screenOff = (pkg.empty() || pkg == "null");
-
-        // 保活维持/释放：游戏在前台、或仍可见(输入法/通知栏覆盖在其上)→ 维持画像;
-        // 真离开前台后给 kHeldGraceMs 宽限(快速切回不掉档); 熄屏 / 离开超时 / 进程退出 → 释放回落基础。
+        // 保活：检测到游戏/keep_alive 包后, 只要其进程存活就维持画像, 无视前台变化
+        // (小窗/分屏/输入法/通知栏/回桌面/切别的App 都不掉), 直到游戏进程退出才解除。
         if (!heldPkg.empty()) {
-            if (!screenOff && pkg == heldPkg) { heldLeftFgMs = 0; return; }  // 游戏在前台
-
-            // 前台切到了另一个保活类 App → 移交(走下方常规评估重建)
-            bool handover = false;
-            if (fresh && !screenOff) {
-                int m = Config::AppProfile::isBlacklisted(pkg.c_str())
-                          ? -1 : Config::AppProfile::findMatchingModel(pkg.c_str());
-                handover = (m >= 0 && (Config::AppProfile::Models[m].isGame ||
-                                       Config::AppProfile::Models[m].keepAlive));
-            }
-            if (!handover) {
-                // 游戏仍在屏幕上(小窗/分屏/输入法/通知栏覆盖, 游戏仍是可见 Task 或在 top-app)
-                // → 维持, 不计时。双信号(top-app 成员 + 可见)防 ColorOS 小窗漏判。
-                if (!screenOff &&
-                    (utils.isPackageInTopApp(heldPkg.c_str()) ||
-                     utils.isPackageVisible(heldPkg.c_str()))) {
-                    heldLeftFgMs = 0;
-                    return;
-                }
-                // 真离开前台/熄屏: 计时, 宽限内维持, 超时/熄屏/进程死则释放
-                long long now = nowMs();
-                if (heldLeftFgMs == 0) heldLeftFgMs = now;
-                bool dead = !utils.isPackageRunning(heldPkg.c_str());
-                if (!(screenOff || dead || now - heldLeftFgMs >= kHeldGraceMs)) return;
-                logger.Info("保活释放: %s (%s) → 回落基础档", heldPkg.c_str(),
-                            screenOff ? "熄屏" : (dead ? "进程退出" : "离开前台超时"));
+            if (utils.isPackageRunning(heldPkg.c_str())) {
+                if (!fresh) return;   // 空闲复查: 进程在就维持, 不取前台
+                // 前台事件: 仅当切到"另一个"保活类 App 才移交, 否则维持(不打日志)
+                std::string cur = utils.getTopAppCached(800);
+                if (cur.empty() || cur == "null" || cur == heldPkg) return;
+                int m = Config::AppProfile::isBlacklisted(cur.c_str())
+                          ? -1 : Config::AppProfile::findMatchingModel(cur.c_str());
+                if (m < 0 || !(Config::AppProfile::Models[m].isGame ||
+                               Config::AppProfile::Models[m].keepAlive)) return;
+                heldPkg.clear();      // 移交给新保活 App(走下方重建)
+                lastTopApp.clear();
             } else {
-                logger.Info("保活移交: %s → %s", heldPkg.c_str(), pkg.c_str());
+                logger.Info("保活: %s 已退出 → 解除", heldPkg.c_str());  // 退出打印一次
+                heldPkg.clear();
+                Config::AppProfile::currentMatch.store(-1);
+                lastTopApp.clear();
+                applyWithProfile();   // 立即落基础, 防去重跳过致高频残留
             }
-            heldPkg.clear();
-            heldLeftFgMs = 0;
-            Config::AppProfile::currentMatch.store(-1);
-            lastTopApp.clear();
-            // 释放须立即落基础(防新前台同 newMatch=-1 被去重跳过 → 高频残留); 移交则继续匹配新 App
-            if (!handover) applyWithProfile();
         }
 
-        if (screenOff) return;  // 熄屏不切画像
+        std::string pkg = fresh ? utils.getTopApp() : utils.getTopAppCached(2500);
+        if (pkg.empty() || pkg == "null") return;
 
         if (pkg == lastTopApp) return;
         lastTopApp = pkg;
 
         // 黑名单前台(launcher/systemui/输入法等)→ 跟随全局(基础档),与"无匹配画像"同一条路。
         int newMatch = Config::AppProfile::isBlacklisted(pkg.c_str())
-                         ? -1
-                         : Config::AppProfile::findMatchingModel(pkg.c_str());
+                         ? -1 : Config::AppProfile::findMatchingModel(pkg.c_str());
 
-        // 保活建立须在去重之外: 重载清掉 heldPkg 后 match 可能不变(被去重跳过), 仍要恢复持有。
+        // 建立保活须在去重之外: 重载清掉 heldPkg 后 match 可能不变(被去重跳过), 仍要恢复持有。
         if (newMatch >= 0) {
             const auto& mdl = Config::AppProfile::Models[newMatch];
-            if (mdl.isGame || mdl.keepAlive) { heldPkg = pkg; heldLeftFgMs = 0; }
+            if (mdl.isGame || mdl.keepAlive) heldPkg = pkg;
         }
 
-        // 去重：与当前画像相同则跳过，不重复刷 sysfs
+        // 去重：与当前画像相同则跳过(进入游戏的日志即在此打印一次)
         int oldMatch = Config::AppProfile::currentMatch.load();
         if (newMatch != oldMatch) {
             Config::AppProfile::currentMatch.store(newMatch);
             if (newMatch >= 0) {
                 const auto& mdl = Config::AppProfile::Models[newMatch];
                 logger.Info("前台: %s → 档[%s]%s", pkg.c_str(),
-                            mdl.modelName.c_str(), mdl.isGame ? " (游戏)" : "");
+                            mdl.modelName.c_str(), mdl.isGame ? " (游戏, 保活至退出)" : "");
             } else {
                 logger.Info("前台: %s → 默认档(跟随全局)", pkg.c_str());
             }
