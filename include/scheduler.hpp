@@ -418,10 +418,19 @@ public:
         SchedParam();
         online();
         function.gpuFreqControl();
-        // 重载已重建 Models/重置 currentMatch, 旧 heldPkg 不清会顶住前台重评:
-        // 前台游戏被打回基础档且在进程退出前永不恢复画像(保活+lastTopApp 去重双重卡死)。
+        if (!Config::AppProfile::enable) return;
+        // 保活中且游戏进程仍在 → 重应用游戏画像(用新配置), 不因重载切到当前前台:
+        // 防 Scene/编辑配置触发的重载在开着小窗时把游戏档丢掉。否则清保活按当前前台重评。
+        if (!heldPkg.empty() && utils.isPackageRunning(heldPkg.c_str())) {
+            int m = Config::AppProfile::findMatchingModel(heldPkg.c_str());
+            if (m >= 0) {
+                Config::AppProfile::currentMatch.store(m);
+                applyWithProfile();
+                return;
+            }
+        }
         heldPkg.clear();
-        if (Config::AppProfile::enable) forceReevalForeground();
+        forceReevalForeground();
     }
 
     // perapp 改变后包名不变但画像可能变，必须强制重算（绕过 pkg==lastTopApp 去重）
