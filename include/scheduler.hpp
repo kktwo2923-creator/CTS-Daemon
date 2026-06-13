@@ -47,6 +47,14 @@ private:
     long long   lastGameCpusetFixMs = 0;  // 游戏档 cpuset 矫正节流: 上次矫正时刻(ms), 防 ping-pong
     std::string heldPkg;             // 正在保活的游戏/保活画像包名(进程存活则维持), 空=未保活
 
+    // App 无障碍服务(AppSwitchService)推送的前台包名 + 接收时刻; 新鲜则优先于 dumpsys, 省 popen。
+    // 服务未启用/被杀 → 推送变陈旧 → 自动回退 dumpsys, 不影响"不开 App 也能用"。
+    std::mutex  pushMtx_;
+    std::string pushedTopApp_;
+    std::atomic<long long> lastPushMs_{0};
+    static constexpr long long kPushTtlMs = 15000;  // 推送有效期(ms): App 端每 ~10s 心跳重推
+    static constexpr const char* topAppPath = "/sdcard/Android/CTS/topapp.txt";
+
     static long long nowMs() {
         return std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -569,6 +577,7 @@ public:
                     if      (strcmp(ev->name, "mode.txt") == 0)             onModeChanged(lastModeHash);
                     else if (strcmp(ev->name, "config.json") == 0)          onJsonChanged(lastJsonHash);
                     else if (strcmp(ev->name, "perapp_powermode.txt") == 0) onPerappChanged();
+                    else if (strcmp(ev->name, "topapp.txt") == 0)           onTopAppChanged();
                 }
             }
             inotify_rm_watch(fd, wd);
@@ -708,6 +717,16 @@ public:
     // 顶层可能是小窗工具(如 MT管理器)。这里在可见标准 Task 里跳过黑名单, 取最顶的"非黑名单"应用,
     // 对齐 Scene 的忽略名单行为, 从源头修正"小窗抢占检测"。全为黑名单/快照无效时回退三级链。
     std::string getForegroundPkg(bool fresh) {
+        // ① App 无障碍服务推送(新鲜)优先: 普通切换直接用, 省去 dumpsys popen
+        {
+            std::lock_guard<std::mutex> lk(pushMtx_);
+            if (!pushedTopApp_.empty() && nowMs() - lastPushMs_.load() < kPushTtlMs) {
+                if (!Config::AppProfile::isBlacklisted(pushedTopApp_.c_str()))
+                    return pushedTopApp_;
+                // 推送的是黑名单(小窗工具/launcher) → 落 dumpsys 从可见栈里捞主应用
+            }
+        }
+        // ② dumpsys 黑名单感知
         Utils::ForegroundSnapshot s = utils.getForegroundCached(fresh ? 0 : 2500);
         if (s.valid) {
             for (const auto& p : s.standardVisible)
@@ -715,6 +734,18 @@ public:
             if (!s.topPkg.empty()) return s.topPkg;   // 全是黑名单 → 退回最顶层
         }
         return fresh ? utils.getTopApp() : utils.getTopAppCached(2500);
+    }
+
+    // App 推送 topapp.txt 变更: 记录包名+时刻, 立即重评前台(走 getForegroundPkg 会用到推送值)
+    void onTopAppChanged() {
+        char buf[256];
+        if (!readNodeTrim(topAppPath, buf, sizeof(buf)) || !buf[0]) return;
+        {
+            std::lock_guard<std::mutex> lk(pushMtx_);
+            pushedTopApp_ = buf;
+        }
+        lastPushMs_.store(nowMs());
+        evalForegroundOnce(true);
     }
 
     // fresh=true: 强制取最新前台（事件驱动路径用，避免 TTL 缓存返回旧包名误判未切换）
