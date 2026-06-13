@@ -648,8 +648,14 @@ public:
                                        Config::AppProfile::Models[m].keepAlive));
             }
             if (!handover) {
-                // 游戏仍在屏幕上(被输入法/通知栏覆盖)→ 维持, 不计时
-                if (!screenOff && utils.isPackageVisible(heldPkg.c_str())) { heldLeftFgMs = 0; return; }
+                // 游戏仍在屏幕上(小窗/分屏/输入法/通知栏覆盖, 游戏仍是可见 Task 或在 top-app)
+                // → 维持, 不计时。双信号(top-app 成员 + 可见)防 ColorOS 小窗漏判。
+                if (!screenOff &&
+                    (utils.isPackageInTopApp(heldPkg.c_str()) ||
+                     utils.isPackageVisible(heldPkg.c_str()))) {
+                    heldLeftFgMs = 0;
+                    return;
+                }
                 // 真离开前台/熄屏: 计时, 宽限内维持, 超时/熄屏/进程死则释放
                 long long now = nowMs();
                 if (heldLeftFgMs == 0) heldLeftFgMs = now;
