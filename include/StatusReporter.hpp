@@ -1,7 +1,7 @@
 #pragma once
 
-// StatusReporter — 每秒采样功耗/CPU频率/GPU/电量写 status.json，维护 daemon.alive 心跳
-// 功耗：自动判单/双芯电压量级（<6V 则双芯×2）；policy 动态枚举；全程 sysfs 读取无 popen
+// StatusReporter — 每秒采样 CPU频率/GPU/电量写 status.json，维护 daemon.alive 心跳
+// 功耗改由前端 App 自行计算（单/双芯判定放 App）；policy 动态枚举；全程 sysfs 读取无 popen
 
 #include <atomic>
 #include <thread>
@@ -35,7 +35,6 @@ private:
     std::thread th_;
     std::mutex mtx_;
     std::condition_variable cv_;
-    int cellCount_;             // 1 单芯 / 2 双芯串联
     std::vector<int> policies_; // 动态发现的 policy 列表
     std::vector<std::string> curFreqPaths_, govPaths_;  // 预生成,避免每秒重复拼串
 
@@ -78,17 +77,6 @@ private:
         return v;
     }
 
-    double computeWatt() const {
-        long i = readLong("/sys/class/power_supply/battery/current_now");
-        long v = readLong("/sys/class/power_supply/battery/voltage_now");
-        if (i == LONG_MIN || v == LONG_MIN) return 0.0;
-        long absI = labs(i), absV = labs(v);
-        double currentMa = (absI > 100000) ? absI / 1000.0 : (double)absI;  // µA→mA
-        double voltageMv = (absV > 100000) ? absV / 1000.0 : (double)absV;  // µV→mV
-        double mult = (cellCount_ >= 2 && voltageMv < 6000.0) ? 2.0 : 1.0;
-        return currentMa * voltageMv / 1000000.0 * mult;
-    }
-
     bool isCharging() const {
         std::string s = readStr("/sys/class/power_supply/battery/status");
         return s == "Charging" || s == "Full";
@@ -112,15 +100,14 @@ private:
 
     // 栈缓冲拼 JSON，消除每秒 ~10 次堆分配
     int buildJson(char* out, size_t cap) const {
-        double watt = computeWatt();
         bool chg = isCharging();
         int batt = (int)readLong("/sys/class/power_supply/battery/capacity");
         if (batt < 0) batt = -1;
         int gpu = gpuMhz();
 
         int len = snprintf(out, cap,
-            "{\"ts\":%ld,\"watt\":%.3f,\"charging\":%s,\"batt_pct\":%d,\"gpu_mhz\":%d,\"clusters\":[",
-            (long)time(nullptr), watt, chg ? "true" : "false", batt, gpu);
+            "{\"ts\":%ld,\"charging\":%s,\"batt_pct\":%d,\"gpu_mhz\":%d,\"clusters\":[",
+            (long)time(nullptr), chg ? "true" : "false", batt, gpu);
 
         for (size_t k = 0; k < policies_.size() && len < (int)cap - 1; ++k) {
             long curK = readLong(curFreqPaths_[k].c_str());
@@ -171,7 +158,7 @@ private:
     }
 
 public:
-    explicit StatusReporter(int cellCount = 2) : cellCount_(cellCount) {}
+    StatusReporter() = default;
 
     void start() {
         th_ = std::thread(&StatusReporter::loop, this);

@@ -13,7 +13,7 @@ int main(void) {
 
     Schedule sched;
 
-    StatusReporter reporter(2);
+    StatusReporter reporter;
     reporter.start();
 
     while (g_run.load(std::memory_order_relaxed)) {
