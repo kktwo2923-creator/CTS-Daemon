@@ -253,6 +253,13 @@ public:
             const string_t& gpuMin = !model.GpuMinFreq.empty() ? model.GpuMinFreq : GpuFreq::min_freq;
             const string_t& gpuMax = !model.GpuMaxFreq.empty() ? model.GpuMaxFreq : GpuFreq::max_freq;
             function.gpuFreqControlCustom(gpuMin, gpuMax);
+            // 守护快照同步为画像目标: 否则 gpuFreqGuard 仍按基础值判"漂移", ~1s 内把
+            // 画像 GPU 频率改回基础值(画像 GPU 设置形同虚设); 同步后守护反而保护画像值。
+            GpuFreq::min_mhz.store(Fastatoi(gpuMin.c_str()));
+            GpuFreq::max_mhz.store(Fastatoi(gpuMax.c_str()));
+        } else {
+            // 画像未定义 GPU → 跟随基础档, 防止上一画像的 GPU 频率/快照残留
+            applyBaseGpu();
         }
 
         char spPath[256];
@@ -297,6 +304,8 @@ public:
     // 退出画像时主动还原基础 GPU 频率，否则要等 gpuFreqGuard 最长 15s 才生效
     void applyBaseGpu() {
         if (!Config::GpuFreq::enable) return;
+        // 画像可能改写过守护快照, 回基础档必须还原(基础未配 GPU 时发布 0/0 让守护停手)
+        JsonConfig::publishGpuSnapshot();
         if (Config::GpuFreq::min_freq.empty() && Config::GpuFreq::max_freq.empty()) return;
         function.gpuFreqControlCustom(Config::GpuFreq::min_freq, Config::GpuFreq::max_freq);
     }
@@ -339,8 +348,7 @@ public:
         if (Config::AppProfile::enable && matchIdx >= 0) {
             applyAppProfile(matchIdx);
         } else {
-            applyBaseMode();
-            restoreBaseCoresIfNeeded();
+            applyBaseMode(); // 内部已先 restoreBaseCoresIfNeeded, 不再重复
         }
     }
 
@@ -393,6 +401,10 @@ public:
         SchedParam();
         online();
         function.gpuFreqControl();
+        // 重载已重建 Models/重置 currentMatch, 旧 heldPkg 不清会顶住前台重评:
+        // 前台游戏被打回基础档且在进程退出前永不恢复画像(保活+lastTopApp 去重双重卡死)。
+        heldPkg.clear();
+        if (Config::AppProfile::enable) forceReevalForeground();
     }
 
     // perapp 改变后包名不变但画像可能变，必须强制重算（绕过 pkg==lastTopApp 去重）
@@ -402,10 +414,14 @@ public:
         conf.loadPerApp();
         logger.Info("perapp_powermode.txt 已重载 (%d 条映射), 重算当前前台画像",
                     Config::AppProfile::perAppCount);
+        invalidateFreqCache(); // sysfs 可能被外部改过, 同值切档不能被去重跳过
+        heldPkg.clear();       // 保活包的映射可能已变, 重评后按需重建
         forceReevalForeground();
     }
 
     void forceReevalForeground() {
+        // lastTopApp 与前台线程共享, 必须持 applyMtx(可重入, 调用方已持锁也安全)
+        std::lock_guard<std::recursive_mutex> lk(applyMtx);
         lastTopApp.clear();
         evalForegroundOnce(true);
     }
@@ -614,11 +630,29 @@ public:
         // (拉输入法/通知栏/回桌面/切别的 App 都不掉)，直到进程退出(被划掉/杀死)才解除。
         // 满足"检测到游戏包就持续游戏档直到退出"。桌面无事件时由空闲复查兜底检测退出。
         if (!heldPkg.empty()) {
-            if (utils.isPackageRunning(heldPkg.c_str())) return;
-            logger.Info("保活 App %s 已退出 → 解除保活, 重新评估前台", heldPkg.c_str());
-            heldPkg.clear();
-            Config::AppProfile::currentMatch.store(-1);
-            lastTopApp.clear();
+            if (utils.isPackageRunning(heldPkg.c_str())) {
+                // 进程存活: 空闲复查只做 /proc 廉价检查直接维持;
+                // 前台事件时还需检查是否切到了另一个保活类 App, 否则新游戏被旧保活顶住、
+                // 跑在旧画像上。非保活前台(桌面/弹窗/普通 App)仍维持不掉档。
+                if (!fresh) return;
+                std::string cur = utils.getTopAppCached(800); // TTL 限频, 事件风暴不刷 dumpsys
+                if (cur.empty() || cur == "null" || cur == heldPkg) return;
+                int m = Config::AppProfile::isBlacklisted(cur.c_str())
+                          ? -1 : Config::AppProfile::findMatchingModel(cur.c_str());
+                if (m < 0 || !(Config::AppProfile::Models[m].isGame ||
+                               Config::AppProfile::Models[m].keepAlive)) return;
+                logger.Info("保活移交: %s → %s", heldPkg.c_str(), cur.c_str());
+                heldPkg.clear();      // 移交给新保活 App, 走下方常规评估重建
+                lastTopApp.clear();
+            } else {
+                logger.Info("保活 App %s 已退出 → 解除保活, 回落当前档后重评前台", heldPkg.c_str());
+                heldPkg.clear();
+                Config::AppProfile::currentMatch.store(-1);
+                lastTopApp.clear();
+                // 必须立即落档: 若新前台同样无画像(newMatch=-1==oldMatch), 下方去重会跳过
+                // 应用 → 游戏档高频/调速器残留 sysfs 降不回。
+                applyWithProfile();
+            }
         }
 
         std::string pkg = fresh ? utils.getTopApp() : utils.getTopAppCached(2500);
@@ -633,6 +667,13 @@ public:
                          ? -1
                          : Config::AppProfile::findMatchingModel(pkg.c_str());
 
+        // 保活建立/续期须在去重之外: 配置重载清掉 heldPkg 后 match 可能不变(被去重跳过),
+        // 此时仍要恢复持有, 否则保活语义静默丢失。
+        if (newMatch >= 0) {
+            const auto& mdl = Config::AppProfile::Models[newMatch];
+            if (mdl.isGame || mdl.keepAlive) heldPkg = pkg;
+        }
+
         // 去重：与当前画像相同则跳过，不重复刷 sysfs
         int oldMatch = Config::AppProfile::currentMatch.load();
         if (newMatch != oldMatch) {
@@ -641,8 +682,6 @@ public:
                 const auto& mdl = Config::AppProfile::Models[newMatch];
                 logger.Info("前台: %s → 档[%s]%s", pkg.c_str(),
                             mdl.modelName.c_str(), mdl.isGame ? " (游戏)" : "");
-                // 游戏/保活画像 → 记下包名,持续保活直到该进程退出
-                if (mdl.isGame || mdl.keepAlive) heldPkg = pkg;
             } else {
                 logger.Info("前台: %s → 默认档(跟随全局)", pkg.c_str());
             }
