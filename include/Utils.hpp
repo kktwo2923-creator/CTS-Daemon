@@ -297,6 +297,7 @@ public:
     struct ForegroundSnapshot {
         std::string topPkg;
         std::vector<std::string> visible;
+        std::vector<std::string> standardVisible;  // Z 序: 所有 type=standard 且 visible=true 的包名
         bool valid = false;
     };
 
@@ -321,8 +322,10 @@ public:
             if (k == 0) continue;
             if (!strstr(line, "visible=true")) continue;
             s.visible.emplace_back(pkg);
-            if (s.topPkg.empty() && strstr(line, "type=standard"))
-                s.topPkg = pkg;
+            if (strstr(line, "type=standard")) {
+                s.standardVisible.emplace_back(pkg);   // 多窗口/小窗下会有多个, 按 Z 序保留
+                if (s.topPkg.empty()) s.topPkg = pkg;
+            }
         }
         return s;
     }

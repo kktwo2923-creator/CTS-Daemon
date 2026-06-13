@@ -704,6 +704,19 @@ public:
         logger.Debug("游戏档: top-app cpuset 被收窄(%s) → 矫正回 %s", now, desired);
     }
 
+    // 取前台包名(黑名单感知): 多窗口/小窗下 dumpsys 会列出多个 type=standard visible=true,
+    // 顶层可能是小窗工具(如 MT管理器)。这里在可见标准 Task 里跳过黑名单, 取最顶的"非黑名单"应用,
+    // 对齐 Scene 的忽略名单行为, 从源头修正"小窗抢占检测"。全为黑名单/快照无效时回退三级链。
+    std::string getForegroundPkg(bool fresh) {
+        Utils::ForegroundSnapshot s = utils.getForegroundCached(fresh ? 0 : 2500);
+        if (s.valid) {
+            for (const auto& p : s.standardVisible)
+                if (!Config::AppProfile::isBlacklisted(p.c_str())) return p;
+            if (!s.topPkg.empty()) return s.topPkg;   // 全是黑名单 → 退回最顶层
+        }
+        return fresh ? utils.getTopApp() : utils.getTopAppCached(2500);
+    }
+
     // fresh=true: 强制取最新前台（事件驱动路径用，避免 TTL 缓存返回旧包名误判未切换）
     // fresh=false: 允许用缓存（空闲复查/低频路径，省电）
     void evalForegroundOnce(bool fresh) {
@@ -716,7 +729,7 @@ public:
             if (utils.isPackageRunning(heldPkg.c_str())) {
                 if (!fresh) return;   // 空闲复查: 进程在就维持, 不取前台
                 // 前台事件: 仅当切到"另一个"保活类 App 才移交, 否则维持(不打日志)
-                std::string cur = utils.getTopAppCached(800);
+                std::string cur = getForegroundPkg(true);
                 if (cur.empty() || cur == "null" || cur == heldPkg) return;
                 int m = Config::AppProfile::isBlacklisted(cur.c_str())
                           ? -1 : Config::AppProfile::findMatchingModel(cur.c_str());
@@ -733,7 +746,7 @@ public:
             }
         }
 
-        std::string pkg = fresh ? utils.getTopApp() : utils.getTopAppCached(2500);
+        std::string pkg = getForegroundPkg(fresh);
         if (pkg.empty() || pkg == "null") return;
 
         if (pkg == lastTopApp) return;
