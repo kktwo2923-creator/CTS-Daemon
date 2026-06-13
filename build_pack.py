@@ -123,17 +123,19 @@ def build_binary():
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    # Compiler flags (optimized for Android, learned from CoreTaskOptimizer)
+    # Compiler flags — 与 CMakeLists.txt 的 Release 配置保持一致：
+    # 本进程是纯整数 + sysfs IO 的常驻 daemon，瓶颈在 IO 而非算力。
+    #   - 去掉 -ffast-math：会改变 NaN/Inf 语义、可能引入 UB，对本进程零收益；
+    #   - 去掉 -O3/-funroll-loops：徒增二进制体积与常驻 RSS，速度无差；
+    #   - 改用 -Os：更小代码段 / 更低常驻内存 / 更快载入。
     cpp_flags = [
         f"--sysroot={sysroot}",
         "--target=aarch64-linux-android29",
         "-std=c++23",
         "-static",          # Static linking for standalone binary
         "-s",               # Strip symbol table
-        "-O3",              # Max optimization
+        "-Os",              # Optimize for size (IO 密集型 daemon，体积优先)
         "-flto",            # Link-time optimization
-        "-ffast-math",      # Fast math
-        "-funroll-loops",   # Loop unrolling
         "-finline-functions",  # Function inlining
         "-fomit-frame-pointer",  # Omit frame pointer
         "-Wall", "-Wextra", "-Wshadow",  # Warnings

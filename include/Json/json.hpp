@@ -1017,8 +1017,9 @@ protected:
             }
         }
 
+        if (begin > end) begin = end;   // \u 跳进可能越界，钳回 end，防 view 越界 + 后续 OOB 读
         *value = string_view_t(start, begin);
-        return ++begin;
+        return begin < end ? begin + 1 : end;
     }
 
     template <class Iter1, class Iter2>
@@ -1096,8 +1097,8 @@ protected:
                             break;
                         }
                         case char_helper::type::n: {
-                            if (likely(*(begin + 1) == 'u' && *(begin + 2) == 'l' &&
-                                       *(begin + 3) == 'l')) {
+                            if (likely(begin + 3 < end && *(begin + 1) == 'u' &&
+                                       *(begin + 2) == 'l' && *(begin + 3) == 'l')) {
                                 __object_emplace(last_layer, key, json_type(allocator));
                             } else {
                                 result = (int32_t)error::invalid_null;
@@ -1106,8 +1107,8 @@ protected:
                             break;
                         }
                         case char_helper::type::t: {
-                            if (likely(*(begin + 1) == 'r' && *(begin + 2) == 'u' &&
-                                       *(begin + 3) == 'e')) {
+                            if (likely(begin + 3 < end && *(begin + 1) == 'r' &&
+                                       *(begin + 2) == 'u' && *(begin + 3) == 'e')) {
                                 __object_emplace(last_layer, key, json_type(true, allocator));
                             } else {
                                 result = (int32_t)error::invalid_boolean;
@@ -1116,8 +1117,8 @@ protected:
                             break;
                         }
                         case char_helper::type::f: {
-                            if (likely(begin[1] == 'a' && begin[2] == 'l' && begin[3] == 's' &&
-                                       begin[4] == 'e')) {
+                            if (likely(begin + 4 < end && begin[1] == 'a' && begin[2] == 'l' &&
+                                       begin[3] == 's' && begin[4] == 'e')) {
                                 __object_emplace(last_layer, key, json_type(false, allocator));
                             } else {
                                 result = (int32_t)error::invalid_boolean;
@@ -1174,8 +1175,8 @@ protected:
                             continue;
                         }
                         case char_helper::type::n: {
-                            if (likely(*(begin + 1) == 'u' && *(begin + 2) == 'l' &&
-                                       *(begin + 3) == 'l')) {
+                            if (likely(begin + 3 < end && *(begin + 1) == 'u' &&
+                                       *(begin + 2) == 'l' && *(begin + 3) == 'l')) {
                                 last_layer.array()->emplace_back(allocator);
                             } else {
                                 result = (int32_t)error::invalid_null;
@@ -1184,8 +1185,8 @@ protected:
                             break;
                         }
                         case char_helper::type::t: {
-                            if (likely(*(begin + 1) == 'r' && *(begin + 2) == 'u' &&
-                                       *(begin + 3) == 'e')) {
+                            if (likely(begin + 3 < end && *(begin + 1) == 'r' &&
+                                       *(begin + 2) == 'u' && *(begin + 3) == 'e')) {
                                 last_layer.array()->emplace_back(true, allocator);
                             } else {
                                 result = (int32_t)error::invalid_boolean;
@@ -1194,8 +1195,8 @@ protected:
                             break;
                         }
                         case char_helper::type::f: {
-                            if (likely(begin[1] == 'a' && begin[2] == 'l' && begin[3] == 's' &&
-                                       begin[4] == 'e')) {
+                            if (likely(begin + 4 < end && begin[1] == 'a' && begin[2] == 'l' &&
+                                       begin[3] == 's' && begin[4] == 'e')) {
                                 last_layer.array()->emplace_back(false, allocator);
                             } else {
                                 result = (int32_t)error::invalid_boolean;

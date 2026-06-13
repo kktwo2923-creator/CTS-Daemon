@@ -111,9 +111,10 @@ public:
         }
     }
 
-    // qlib::string operator== 已修为按内容比较；此处保守保留 strcmp（语义本就正确）
+    // 必须 size 感知：clear() 只置 _size=0 不动缓冲区，仅比 c_str() 会把"已清空"误判为
+    // 等于旧值，导致 invalidateFreqCache()/漂移纠正后同值重写被去重跳过（"降不回/不生效"根因）。
     static inline bool str_eq(const string_t& a, const string_t& b) {
-        return strcmp(a.c_str(), b.c_str()) == 0;
+        return a.size() == b.size() && strcmp(a.c_str(), b.c_str()) == 0;
     }
 
     // 传引用避免每次调用 3 个 string_t 堆拷贝
@@ -288,7 +289,8 @@ public:
                 FastSnprintf(spPath, sizeof(spPath), SchedParamPath,
                              Policy::CpuPolicy[i], gov.c_str(),
                              model.SchedParamName[i][j].c_str());
-                utils.FileWrite(spPath, model.SchedParamValue[i][j].c_str());
+                // 阻塞写：governor 类节点用 O_NONBLOCK 会 EAGAIN 静默失败(同 scaling_governor)
+                utils.FileWriteBlocking(spPath, model.SchedParamValue[i][j]);
                 logger.Debug("画像调速器参数: c%d/%s = %s",
                              i, model.SchedParamName[i][j].c_str(),
                              model.SchedParamValue[i][j].c_str());
@@ -400,7 +402,8 @@ public:
             for (int j = 0; j < kMaxSchedParams; j++) {
                 if (conf.schedParam[i].Name[j].empty()) continue;
                 FastSnprintf(path, sizeof(path), SchedParamPath, Policy::CpuPolicy[i], Performances::CpuGovernor[i].c_str(), conf.schedParam[i].Name[j].c_str());
-                utils.FileWrite(path, conf.schedParam[i].Value[j].c_str());
+                // 阻塞写：governor 类节点用 O_NONBLOCK 会 EAGAIN 静默失败(同 scaling_governor)
+                utils.FileWriteBlocking(path, conf.schedParam[i].Value[j]);
                 logger.Debug("CPU簇: %d 调速器参数: %s 值: %s", Policy::CpuPolicy[i], conf.schedParam[i].Name[j].c_str(), conf.schedParam[i].Value[j].c_str());
             }
         }

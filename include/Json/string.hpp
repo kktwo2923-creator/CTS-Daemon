@@ -302,6 +302,7 @@ protected:
     INLINE constexpr void _assign(Iter1 begin, Iter2 end) {
         const size_type size = distance(begin, end);
         if (size == 0u) {
+            if (_impl) _impl[0] = '\0';   // 维持 c_str() 与 empty() 一致，避免读到旧内容
             _size = 0u;
             return;
         }
@@ -363,6 +364,8 @@ public:
     INLINE constexpr value(self&& o) noexcept
             : base(move(o)), _impl(o._impl), _size(o._size), _capacity(o._capacity) {
         o._impl = nullptr;
+        o._size = 0u;       // 被移动对象置空一致态，防 use-after-move 读到悬垂 size/capacity
+        o._capacity = 0u;
     }
 
 #ifdef _GLIBCXX_STRING_VIEW
@@ -478,7 +481,11 @@ public:
     }
     // ====================================================================
 
-    INLINE CONSTEXPR void clear() noexcept { _size = 0u; }
+    // 同步截断缓冲区：否则 c_str()/strlen 仍读到 clear 前的旧内容（size 与内容不一致）
+    INLINE CONSTEXPR void clear() noexcept {
+        if (_impl) _impl[0] = '\0';
+        _size = 0u;
+    }
 
     template <class Iter1, class Iter2>
     INLINE void emplace(Iter1 __begin, Iter2 __end) noexcept {

@@ -55,12 +55,10 @@ public:
 
     template <class T>
     INLINE static constexpr void deallocate(T* p, uint64_t n __attribute__((__unused__))) noexcept {
-        ::operator delete(p
-#if __cpp_sized_deallocation
-                          ,
-                          n * sizeof(T)
-#endif
-        );
+        // 用无大小版 operator delete：string 等容器按 capacity 记账却分配了 capacity+1
+        // (含 '\0'), 启用 sized-deallocation 时 sized delete 的字节数与分配不符 → 堆 UB。
+        // sized delete 仅是微优化, 去掉它对本进程无影响, 且消除整类 new/delete 大小不匹配。
+        ::operator delete(p);
     }
 
     template <class T, class... Args>
