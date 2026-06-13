@@ -71,6 +71,8 @@ public:
         if (Config::AppProfile::enable) {
             threads.emplace_back(thread(&Schedule::appProfileTask, this));
         }
+        // 开机后多次重应用, 覆盖 ROM 晚启动的开机提频(否则要手动切模式才正常)
+        threads.emplace_back(thread(&Schedule::bootResettleTask, this));
     }
 
     // 同 Function::stopGuards 风格：置位 → 唤醒(cv + eventfd) → join，成员销毁前线程已全部退出
@@ -97,6 +99,18 @@ public:
         std::unique_lock<std::mutex> lk(stopMtx_);
         return stopCv_.wait_for(lk, std::chrono::milliseconds(ms),
                                 [this] { return shouldExit_.load(); });
+    }
+
+    // 开机重应用：ROM 的 perf HAL / 开机提频晚于本守护启动, 会把我们应用的频率/调速器顶高,
+    // 而去重缓存挡住自愈 → 卡高频, 要手动切模式才好。开机后分几次强制重应用(applyAllConfig
+    // 内含 invalidateFreqCache), 等 ROM 稳定。可被析构打断。
+    void bootResettleTask() {
+        const int delaysMs[] = { 8000, 20000, 45000 };
+        for (int d : delaysMs) {
+            if (waitStop(d)) return;
+            logger.Info("开机重应用: 覆盖 ROM 开机提频, 强制重应用当前配置");
+            applyAllConfig();
+        }
     }
 
     // qlib::string operator== 已修为按内容比较；此处保守保留 strcmp（语义本就正确）
