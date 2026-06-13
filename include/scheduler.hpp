@@ -604,6 +604,26 @@ public:
     }
 
     // 游戏档下 ORMS 常把 top-app cpuset 收窄（踢掉 6-7），事件驱动+幂等+节流矫正回全核
+    // 运行中 ROM(perf HAL/提频)可能把 CPU min 改回去, 而 FreqWriter 去重缓存=目标值会挡住复写,
+    // 表现成"配置不生效"。空闲复查回读各簇 min, 与上次写入值不符即清缓存强制重应用当前画像。
+    void cpuDriftReassert() {
+        std::lock_guard<std::recursive_mutex> lk(applyMtx);
+        char path[256], cur[40];
+        for (int i = 0; i < kClusterCount; i++) {
+            int p = Config::Policy::CpuPolicy[i];
+            if (p == -1 || lastMinFreq[i].empty()) continue;
+            FastSnprintf(path, sizeof(path), MinFreqPath, p);
+            if (!readNodeTrim(path, cur, sizeof(cur))) continue;
+            if (strcmp(cur, lastMinFreq[i].c_str()) != 0) {
+                logger.Debug("CPU簇 %d min 被外部改动(%s≠%s) → 强制重应用", p, cur,
+                             lastMinFreq[i].c_str());
+                invalidateFreqCache();
+                applyWithProfile();
+                return;
+            }
+        }
+    }
+
     void correctGameTopAppCpus() {
         // 读 Models/Cpuset 全局 string，与配置重载互斥
         std::lock_guard<std::recursive_mutex> lk(applyMtx);
@@ -725,11 +745,13 @@ public:
                 if (waitStop(kPollIdleMs)) break;
                 evalForegroundOnce(true);
                 correctGameTopAppCpus();
+                cpuDriftReassert();
                 continue;
             }
             if (ev == 0) {
                 evalForegroundOnce(false);
                 correctGameTopAppCpus();
+                cpuDriftReassert();
                 continue;
             }
 
