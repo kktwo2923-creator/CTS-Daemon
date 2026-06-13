@@ -191,6 +191,16 @@ public:
         }
     }
 
+    // 非游戏档 governor 兜底：画像留空 → 基础模式 → SoC 默认(高通 conservative / 其他 sugov_ext)。
+    // 防外部(如 Scene)把 config 里的 governor 清空后, 该簇被 daemon 放手、随 ROM 漂移到 walt。
+    // 游戏档不走此兜底：留空表示交给 ROM(风驰/hmbird)。
+    string_t resolveGovernor(int clusterIdx, const string_t& want) {
+        if (!want.empty()) return want;
+        if (!Performances::CpuGovernor[clusterIdx].empty())
+            return Performances::CpuGovernor[clusterIdx];
+        return function.checkQcom() ? "conservative" : "sugov_ext";
+    }
+
     // 返回 core 所属的 policy（起始核 <= core 的最大 CpuPolicy），找不到返回 -1
     int policyForCore(int core) {
         int best = -1;
@@ -261,8 +271,10 @@ public:
                                                               : Performances::MinFreq[i];
             const string_t& maxF = !model.MaxFreq[i].empty() ? model.MaxFreq[i]
                                                               : Performances::MaxFreq[i];
-            // governor 留空 = 跟随系统不写，频率仍回退基础模式
-            const string_t& gov  = model.Governor[i];
+            // governor: 游戏档留空=交给 ROM(风驰); 非游戏档留空则兜底基础模式/默认,
+            // 避免被外部(如 Scene)清空后该簇随 ROM 漂移到 walt(用户反馈"一个co一个walt")
+            const string_t gov = model.isGame ? model.Governor[i]
+                                              : resolveGovernor(i, model.Governor[i]);
             FreqWriter(Policy::CpuPolicy[i], minF, maxF, gov);
         }
 
@@ -310,8 +322,10 @@ public:
 
         for (int i = 0; i < kClusterCount; i++) {
             if (Policy::CpuPolicy[i] == -1) continue;
-            FreqWriter(Policy::CpuPolicy[i], Performances::MinFreq[i], 
-                    Performances::MaxFreq[i], Performances::CpuGovernor[i]);
+            // 基础模式(powersave/balance/...)均非游戏: governor 留空也兜底, 不交给 ROM
+            const string_t gov = resolveGovernor(i, Performances::CpuGovernor[i]);
+            FreqWriter(Policy::CpuPolicy[i], Performances::MinFreq[i],
+                    Performances::MaxFreq[i], gov);
         }
         // applyBaseMode 必须重写基础 SchedParam，否则 governor tunables 保留游戏画像值导致不降频
         SchedParam();
