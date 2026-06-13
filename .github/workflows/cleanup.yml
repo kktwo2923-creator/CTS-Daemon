@@ -1,0 +1,39 @@
+name: Cleanup old runs
+
+# 提交频繁时 Build 工作流运行记录会堆积上百条；此工作流定期清理，仅保留最近若干条。
+on:
+  schedule:
+    - cron: "0 3 * * *"     # 每天 03:00 UTC 自动清一次
+  workflow_dispatch:          # 也可在 Actions 页手动触发，立即清理积压
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: cleanup-runs
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 删除旧的 workflow 运行记录（保留最近 20 条）
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          KEEP: "20"
+        run: |
+          # 取全部 run id（新→旧，跨分页），跳过最新 KEEP 个，删除其余
+          gh api --paginate "repos/$REPO/actions/runs?per_page=100" \
+            --jq '.workflow_runs[].id' > all_ids.txt || exit 0
+          total=$(wc -l < all_ids.txt)
+          echo "共有 $total 条运行记录，保留最新 $KEEP 条"
+          tail -n +$((KEEP + 1)) all_ids.txt | while read -r id; do
+            [ -n "$id" ] || continue
+            if gh api -X DELETE "repos/$REPO/actions/runs/$id" >/dev/null 2>&1; then
+              echo "已删除 run $id"
+            else
+              echo "跳过 run $id（可能仍在运行/无权限）"
+            fi
+          done
