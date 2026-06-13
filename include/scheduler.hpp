@@ -71,6 +71,8 @@ public:
         }
         // 开机后多次重应用, 覆盖 ROM 晚启动的开机提频(否则要手动切模式才正常)
         threads.emplace_back(thread(&Schedule::bootResettleTask, this));
+        // 实时监测 CPU 状态, 被 ROM/perf 改写则写回配置
+        threads.emplace_back(thread(&Schedule::cpuEnforceTask, this));
     }
 
     // 同 Function::stopGuards 风格：置位 → 唤醒(cv + eventfd) → join，成员销毁前线程已全部退出
@@ -616,23 +618,44 @@ public:
     }
 
     // 游戏档下 ORMS 常把 top-app cpuset 收窄（踢掉 6-7），事件驱动+幂等+节流矫正回全核
-    // 运行中 ROM(perf HAL/提频)可能把 CPU min 改回去, 而 FreqWriter 去重缓存=目标值会挡住复写,
-    // 表现成"配置不生效"。空闲复查回读各簇 min, 与上次写入值不符即清缓存强制重应用当前画像。
-    void cpuDriftReassert() {
+    // 实时回读各簇 governor/min/max, 与上次写入值(配置目标)不符即清缓存强制重应用,
+    // 对抗 ROM/perf HAL 运行时改写。返回是否检测到漂移并已写回。
+    bool enforceState() {
         std::lock_guard<std::recursive_mutex> lk(applyMtx);
-        char path[256], cur[40];
-        for (int i = 0; i < kClusterCount; i++) {
+        char path[256], cur[64];
+        bool drift = false;
+        for (int i = 0; i < kClusterCount && !drift; i++) {
             int p = Config::Policy::CpuPolicy[i];
-            if (p == -1 || lastMinFreq[i].empty()) continue;
-            FastSnprintf(path, sizeof(path), MinFreqPath, p);
-            if (!readNodeTrim(path, cur, sizeof(cur))) continue;
-            if (strcmp(cur, lastMinFreq[i].c_str()) != 0) {
-                logger.Debug("CPU簇 %d min 被外部改动(%s≠%s) → 强制重应用", p, cur,
-                             lastMinFreq[i].c_str());
-                invalidateFreqCache();
-                applyWithProfile();
-                return;
+            if (p == -1) continue;
+            if (!lastGovernor[i].empty()) {
+                FastSnprintf(path, sizeof(path), GovernorPath, p);
+                if (readNodeTrim(path, cur, sizeof(cur)) && strcmp(cur, lastGovernor[i].c_str())) drift = true;
             }
+            if (!drift && !lastMinFreq[i].empty()) {
+                FastSnprintf(path, sizeof(path), MinFreqPath, p);
+                if (readNodeTrim(path, cur, sizeof(cur)) && strcmp(cur, lastMinFreq[i].c_str())) drift = true;
+            }
+            if (!drift && !lastMaxFreq[i].empty()) {
+                FastSnprintf(path, sizeof(path), MaxFreqPath, p);
+                if (readNodeTrim(path, cur, sizeof(cur)) && strcmp(cur, lastMaxFreq[i].c_str())) drift = true;
+            }
+        }
+        if (drift) {
+            logger.Debug("CPU 状态被外部改写 → 强制写回配置");
+            invalidateFreqCache();
+            applyWithProfile();
+        }
+        return drift;
+    }
+
+    // 实时监测线程: 周期回读纠正; 稳定久了退避省电, 一旦被改写立即回 2s 紧盯
+    void cpuEnforceTask() {
+        if (waitStop(6000)) return;   // 等启动稳定
+        int interval = 2000, stable = 0;
+        while (!shouldExit_.load()) {
+            if (enforceState()) { interval = 2000; stable = 0; }
+            else if (++stable >= 5) interval = 5000;
+            if (waitStop(interval)) break;
         }
     }
 
@@ -702,26 +725,36 @@ public:
         if (pkg == lastTopApp) return;
         lastTopApp = pkg;
 
-        // 黑名单前台(launcher/systemui/输入法等)→ 跟随全局(基础档),与"无匹配画像"同一条路。
-        int newMatch = Config::AppProfile::isBlacklisted(pkg.c_str())
-                         ? -1 : Config::AppProfile::findMatchingModel(pkg.c_str());
+        // 黑名单前台(launcher/systemui/输入法等)或无匹配画像 → matched=-1
+        int matched = Config::AppProfile::isBlacklisted(pkg.c_str())
+                        ? -1 : Config::AppProfile::findMatchingModel(pkg.c_str());
 
         // 建立保活须在去重之外: 重载清掉 heldPkg 后 match 可能不变(被去重跳过), 仍要恢复持有。
-        if (newMatch >= 0) {
-            const auto& mdl = Config::AppProfile::Models[newMatch];
+        // 仅真实匹配到游戏/保活画像时建立(省电兜底不建立保活)。
+        if (matched >= 0) {
+            const auto& mdl = Config::AppProfile::Models[matched];
             if (mdl.isGame || mdl.keepAlive) heldPkg = pkg;
         }
 
-        // 去重：与当前画像相同则跳过(进入游戏的日志即在此打印一次)
+        // 无匹配/黑名单 → 应用省电模型(找不到则回落基础档)
+        int newMatch = matched;
+        bool toPowersave = false;
+        if (newMatch < 0) {
+            int ps = Config::AppProfile::findModelByName("powersave");
+            if (ps >= 0) { newMatch = ps; toPowersave = true; }
+        }
+
+        // 去重：与当前画像相同则跳过(进入游戏/省电的日志即在此打印一次)
         int oldMatch = Config::AppProfile::currentMatch.load();
         if (newMatch != oldMatch) {
             Config::AppProfile::currentMatch.store(newMatch);
-            if (newMatch >= 0) {
-                const auto& mdl = Config::AppProfile::Models[newMatch];
+            if (matched >= 0) {
+                const auto& mdl = Config::AppProfile::Models[matched];
                 logger.Info("前台: %s → 档[%s]%s", pkg.c_str(),
                             mdl.modelName.c_str(), mdl.isGame ? " (游戏, 保活至退出)" : "");
             } else {
-                logger.Info("前台: %s → 默认档(跟随全局)", pkg.c_str());
+                logger.Info("前台: %s → %s", pkg.c_str(),
+                            toPowersave ? "省电(无匹配/黑名单)" : "基础档(跟随全局)");
             }
             applyWithProfile();
         }
@@ -757,13 +790,11 @@ public:
                 if (waitStop(kPollIdleMs)) break;
                 evalForegroundOnce(true);
                 correctGameTopAppCpus();
-                cpuDriftReassert();
                 continue;
             }
             if (ev == 0) {
                 evalForegroundOnce(false);
                 correctGameTopAppCpus();
-                cpuDriftReassert();
                 continue;
             }
 
