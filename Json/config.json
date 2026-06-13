@@ -219,10 +219,10 @@
         "Core7": "1"
       },
       "gov_c0": {
-        "governor": ""
+        "governor": "hmbird"
       },
       "gov_c1": {
-        "governor": ""
+        "governor": "hmbird"
       }
     },
     {
