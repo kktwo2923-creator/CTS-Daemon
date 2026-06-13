@@ -347,15 +347,15 @@
         "Core7": "0"
       },
       "gov_c0": {
-        "governor": "walt"
+        "governor": "conservative"
       },
       "gov_c1": {
-        "governor": "walt"
+        "governor": "conservative"
       },
       "freq_min_c2": "537600",
       "freq_max_c2": "1400000",
       "gov_c2": {
-        "governor": "walt"
+        "governor": "conservative"
       }
     },
     {
@@ -384,15 +384,15 @@
         "Core7": "0"
       },
       "gov_c0": {
-        "governor": "walt"
+        "governor": "conservative"
       },
       "gov_c1": {
-        "governor": "walt"
+        "governor": "conservative"
       },
       "freq_min_c2": "768000",
       "freq_max_c2": "2400000",
       "gov_c2": {
-        "governor": "walt"
+        "governor": "conservative"
       }
     },
     {
@@ -421,15 +421,15 @@
         "Core7": "0"
       },
       "gov_c0": {
-        "governor": "walt"
+        "governor": "conservative"
       },
       "gov_c1": {
-        "governor": "walt"
+        "governor": "conservative"
       },
       "freq_min_c2": "537600",
       "freq_max_c2": "1555200",
       "gov_c2": {
-        "governor": "walt"
+        "governor": "conservative"
       }
     },
     {
@@ -460,15 +460,15 @@
         "Core7": "0"
       },
       "gov_c0": {
-        "governor": "walt"
+        "governor": "conservative"
       },
       "gov_c1": {
-        "governor": "walt"
+        "governor": "conservative"
       },
       "freq_min_c2": "384000",
       "freq_max_c2": "1300000",
       "gov_c2": {
-        "governor": "walt"
+        "governor": "conservative"
       }
     }
   ]
