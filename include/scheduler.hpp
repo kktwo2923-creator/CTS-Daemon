@@ -106,7 +106,7 @@ public:
         const int delaysMs[] = { 8000, 20000, 45000 };
         for (int d : delaysMs) {
             if (waitStop(d)) return;
-            logger.Info("开机重应用: 覆盖 ROM 开机提频, 强制重应用当前配置");
+            logger.Debug("开机重应用: 覆盖 ROM 开机提频, 强制重应用当前配置");
             applyAllConfig();
         }
     }
@@ -712,7 +712,7 @@ public:
                                    IN_MODIFY | IN_ATTRIB | IN_MOVED_TO | IN_CREATE);
             if (wd < 0) { close(fd); fd = -1; }
         }
-        logger.Info(fd >= 0
+        logger.Debug(fd >= 0
             ? "场景画像监控线程已启动 (事件驱动: 监听 top-app 切换, 支持通配符匹配)"
             : "场景画像监控线程已启动 (inotify 不可用, 回退轮询; 支持通配符匹配)");
 
