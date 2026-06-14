@@ -52,7 +52,7 @@
     <div class="row" style="justify-content:space-between">
       <h1>卡密管理后台</h1>
       <div class="row">
-        <button class="ghost sm" onclick="loadStats();loadList()">刷新</button>
+        <button class="ghost sm" onclick="loadStats();loadList();loadPlansAdmin();loadOrders()">刷新</button>
         <button class="ghost sm" onclick="logout()">退出</button>
       </div>
     </div>
@@ -76,6 +76,27 @@
         <button class="ghost" onclick="copyGen()">复制全部</button>
       </div>
       <div id="gen-out" class="gen-out hide" style="margin-top:10px"></div>
+    </div>
+
+    <div class="card">
+      <h2>收款 / 套餐价格 <span id="pay-status" class="muted"></span></h2>
+      <div class="muted" style="margin-bottom:8px">购买页:<a id="buylink" href="/buy.html" target="_blank">/buy.html</a>(把这个链接发给买家)。改完价格点「保存」即时生效。</div>
+      <div style="overflow:auto">
+        <table id="plantbl"><thead><tr>
+          <th>代码</th><th>名称</th><th>天数(0永久)</th><th>价格¥</th><th>卡密前缀</th><th>上架</th><th>操作</th>
+        </tr></thead><tbody></tbody></table>
+      </div>
+      <div class="row" style="margin-top:10px"><button class="ghost sm" onclick="addPlanRow()">+ 新增套餐</button></div>
+    </div>
+
+    <div class="card">
+      <h2>订单(自动发卡)</h2>
+      <div class="stat" id="ostat" style="grid-template-columns:repeat(2,1fr);max-width:320px"></div>
+      <div style="overflow:auto;margin-top:10px">
+        <table id="otbl"><thead><tr>
+          <th>订单号</th><th>套餐</th><th>金额</th><th>方式</th><th>状态</th><th>卡密</th><th>时间</th>
+        </tr></thead><tbody></tbody></table>
+      </div>
     </div>
 
     <div class="card">
@@ -117,7 +138,7 @@ async function login(){
   else document.getElementById("lg-err").textContent=j.message||"登录失败";
 }
 function logout(){ token=""; localStorage.removeItem("cts_jwt"); document.getElementById("app").classList.add("hide"); document.getElementById("login").classList.remove("hide"); }
-function showApp(){ document.getElementById("login").classList.add("hide"); document.getElementById("app").classList.remove("hide"); loadStats(); loadList(); }
+function showApp(){ document.getElementById("login").classList.add("hide"); document.getElementById("app").classList.remove("hide"); loadStats(); loadList(); loadPlansAdmin(); loadOrders(); }
 
 async function loadStats(){
   const j = await api("/api/stats",{headers:authHeaders()});
@@ -165,6 +186,56 @@ async function generate(){
 }
 function copy(t){ navigator.clipboard.writeText(t).then(()=>toast("已复制")); }
 function copyGen(){ if(lastGen.length) copy(lastGen.join("\n")); }
+
+// ---- 套餐价格 ----
+let planRows=[];
+async function loadPlansAdmin(){
+  const j = await api("/api/plans/all",{headers:authHeaders()});
+  if(!j.success){ if(j.code===401) logout(); return; }
+  planRows=j.data.plans||[];
+  document.getElementById("pay-status").textContent = j.data.pay_enabled ? "· 支付已开通 ✅" : "· 支付未配置(把易支付密钥发给部署者填入)";
+  renderPlans();
+}
+function renderPlans(){
+  const tb=document.querySelector("#plantbl tbody"); tb.innerHTML="";
+  planRows.forEach((p,i)=>{
+    tb.innerHTML += `<tr>
+      <td><input style="width:78px" value="${p.code||''}" ${p.code?'readonly':''} id="pc${i}"/></td>
+      <td><input style="width:120px" value="${p.name||''}" id="pn${i}"/></td>
+      <td><input style="width:66px" type="number" value="${p.days||0}" id="pd${i}"/></td>
+      <td><input style="width:78px" value="${p.price||'0.00'}" id="pp${i}"/></td>
+      <td><input style="width:66px" value="${p.prefix||'VPRO'}" id="px${i}"/></td>
+      <td style="text-align:center"><input type="checkbox" ${p.enabled?'checked':''} id="pe${i}"/></td>
+      <td><button class="sm" onclick="savePlan(${i})">保存</button>
+          <button class="sm ghost" onclick="delPlan('${p.code||''}',${i})">删</button></td></tr>`;
+  });
+}
+function addPlanRow(){ planRows.push({code:"",name:"",days:30,price:"0.00",prefix:"VPRO",enabled:1}); renderPlans(); }
+async function savePlan(i){
+  const g=id=>document.getElementById(id+i);
+  const body={code:g("pc").value.trim(),name:g("pn").value,days:+g("pd").value,price:g("pp").value,prefix:g("px").value,enabled:g("pe").checked?1:0,sort:i};
+  if(!body.code){ toast("请填代码(英文字母)"); return; }
+  const j=await api("/api/plans/save",{method:"POST",headers:authHeaders(),body:JSON.stringify(body)});
+  toast(j.message||"已保存"); loadPlansAdmin();
+}
+async function delPlan(code,i){ if(!code){ planRows.splice(i,1); renderPlans(); return; } if(!confirm("删除套餐?"))return;
+  const j=await api("/api/plans/delete",{method:"POST",headers:authHeaders(),body:JSON.stringify({code})}); toast(j.message||"已删"); loadPlansAdmin(); }
+
+// ---- 订单 ----
+async function loadOrders(){
+  const j=await api("/api/order/list?limit=100",{headers:authHeaders()});
+  if(!j.success){ if(j.code===401) logout(); return; }
+  document.getElementById("ostat").innerHTML=
+    [["订单总数",j.data.total],["已支付",j.data.paid]].map(([t,n])=>`<div class="b"><div class="n">${n}</div><div class="t">${t}</div></div>`).join("");
+  const tb=document.querySelector("#otbl tbody"); tb.innerHTML="";
+  for(const o of j.data.list){
+    tb.innerHTML += `<tr><td class="key">${o.out_trade_no}</td><td>${o.plan_code||''}(${o.days==0?'永久':o.days+'天'})</td>
+      <td>¥${o.money||''}</td><td>${o.pay_type==='wxpay'?'微信':'支付宝'}</td>
+      <td><span class="pill ${o.status==1?'s1':'s0'}">${o.status==1?'已支付':'待支付'}</span></td>
+      <td class="key">${o.license_key?o.license_key+` <button class="sm ghost" onclick="copy('${o.license_key}')">复制</button>`:'-'}</td>
+      <td class="muted">${(o.paid_at||o.created_at||'').slice(0,16)}</td></tr>`;
+  }
+}
 
 // 自动登录
 if(token) showApp();

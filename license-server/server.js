@@ -11,6 +11,7 @@ const { ensureInit } = require("./init-db");
 const app = express();
 app.set("trust proxy", 1); // Koyeb/Render/Vercel 在反代后，限流取真实 IP
 app.use(express.json());
+app.use(express.urlencoded({ extended: false })); // 易支付回调可能是表单 POST
 app.use(express.static(path.join(__dirname, "public")));
 
 // serverless(Vercel) 没有启动脚本：首个请求时按需建表/补种子(幂等、仅执行一次)
@@ -244,6 +245,117 @@ app.get("/api/stats", apiLimiter, adminOrApiKey("manage"), async (_req, res) => 
   const total = await get(`SELECT COUNT(*) AS c FROM license_keys`);
   const recent = await all(`SELECT license_key, device_id, ip, result, created_at FROM verify_logs ORDER BY id DESC LIMIT 20`);
   res.json({ code: 200, success: true, data: { total: total ? total.c : 0, ...map, recent } });
+});
+
+// ================= 易支付 自动发卡 =================
+const EPAY = {
+  gateway: (process.env.EPAY_GATEWAY || "").replace(/\/+$/, ""), // 如 https://pay.xxx.com
+  pid: process.env.EPAY_PID || "",
+  key: process.env.EPAY_KEY || "",
+};
+const epayReady = () => !!(EPAY.gateway && EPAY.pid && EPAY.key);
+const md5 = (s) => crypto.createHash("md5").update(s, "utf8").digest("hex");
+
+// 易支付签名：键名 ASCII 升序，拼 k=v&…(去掉 sign/sign_type/空值)，末尾接商户密钥后 MD5
+function epaySign(params) {
+  const keys = Object.keys(params)
+    .filter((k) => k !== "sign" && k !== "sign_type" && params[k] !== "" && params[k] != null)
+    .sort();
+  return md5(keys.map((k) => `${k}=${params[k]}`).join("&") + EPAY.key);
+}
+function baseUrl(req) {
+  if (process.env.BASE_URL) return process.env.BASE_URL.replace(/\/+$/, "");
+  return `${req.headers["x-forwarded-proto"] || "https"}://${req.headers.host}`;
+}
+const newOutTradeNo = () => "CTS" + Date.now() + crypto.randomBytes(2).toString("hex").toUpperCase();
+
+// 上架套餐(公开，购买页用)
+app.get("/api/plans", apiLimiter, async (_req, res) => {
+  const rows = await all(`SELECT code,name,days,price FROM plans WHERE enabled=1 ORDER BY sort,days`);
+  res.json({ code: 200, success: true, data: { plans: rows, pay_enabled: epayReady() } });
+});
+
+// 套餐管理(后台)
+app.get("/api/plans/all", apiLimiter, adminOrApiKey("manage"), async (_req, res) => {
+  const rows = await all(`SELECT code,name,days,price,enabled,sort,prefix FROM plans ORDER BY sort,days`);
+  res.json({ code: 200, success: true, data: { plans: rows, pay_enabled: epayReady(), gateway: EPAY.gateway, pid: EPAY.pid } });
+});
+app.post("/api/plans/save", apiLimiter, adminOrApiKey("manage"), async (req, res) => {
+  const { code, name, days, price, enabled, sort, prefix } = req.body || {};
+  if (!code) return res.status(400).json({ code: 400, success: false, message: "缺少 code" });
+  const exist = await get(`SELECT code FROM plans WHERE code=?`, [code]);
+  const vals = [name || code, parseInt(days) || 0, String(price || "0.00"), enabled ? 1 : 0, parseInt(sort) || 0, prefix || "VPRO"];
+  if (exist) await run(`UPDATE plans SET name=?,days=?,price=?,enabled=?,sort=?,prefix=? WHERE code=?`, [...vals, code]);
+  else await run(`INSERT INTO plans(name,days,price,enabled,sort,prefix,code) VALUES(?,?,?,?,?,?,?)`, [...vals, code]);
+  res.json({ code: 200, success: true, message: "已保存" });
+});
+app.post("/api/plans/delete", apiLimiter, adminOrApiKey("manage"), async (req, res) => {
+  await run(`DELETE FROM plans WHERE code=?`, [(req.body || {}).code || ""]);
+  res.json({ code: 200, success: true, message: "已删除" });
+});
+
+// 发起支付：建订单 + 返回易支付收银台地址
+app.post("/api/pay/create", apiLimiter, async (req, res) => {
+  if (!epayReady()) return res.json({ code: 503, success: false, message: "支付未配置，请联系管理员" });
+  let { plan_code, pay_type } = req.body || {};
+  pay_type = pay_type === "wxpay" ? "wxpay" : "alipay";
+  const plan = await get(`SELECT * FROM plans WHERE code=? AND enabled=1`, [plan_code || ""]);
+  if (!plan) return res.json({ code: 404, success: false, message: "套餐不存在" });
+  const out_trade_no = newOutTradeNo();
+  await run(`INSERT INTO orders(out_trade_no, plan_code, days, money, pay_type, status) VALUES(?,?,?,?,?,0)`,
+    [out_trade_no, plan.code, plan.days, String(plan.price), pay_type]);
+  const params = {
+    pid: EPAY.pid, type: pay_type, out_trade_no,
+    notify_url: `${baseUrl(req)}/api/pay/notify`, return_url: `${baseUrl(req)}/buy.html`,
+    name: plan.name, money: String(plan.price), sign_type: "MD5",
+  };
+  params.sign = epaySign(params);
+  const qs = Object.keys(params).map((k) => `${encodeURIComponent(k)}=${encodeURIComponent(params[k])}`).join("&");
+  res.json({ code: 200, success: true, data: { out_trade_no, pay_url: `${EPAY.gateway}/submit.php?${qs}` } });
+});
+
+// 易支付异步回调：核签 → 出卡。必须返回纯文本 success
+async function handleNotify(req, res) {
+  const p = req.method === "POST" ? req.body : req.query;
+  if (!epayReady()) return res.send("fail");
+  if (!p.sign || epaySign(p) !== p.sign) return res.send("fail");           // 验签
+  if (String(p.pid) !== String(EPAY.pid)) return res.send("fail");
+  if (p.trade_status && p.trade_status !== "TRADE_SUCCESS") return res.send("success"); // 非成功状态照应答
+  const order = await get(`SELECT * FROM orders WHERE out_trade_no=?`, [p.out_trade_no || ""]);
+  if (!order) return res.send("fail");
+  if (order.money && p.money && Number(p.money) + 1e-6 < Number(order.money)) return res.send("fail"); // 金额校验
+  if (order.status === 0) {
+    const planRow = await get(`SELECT prefix FROM plans WHERE code=?`, [order.plan_code]);
+    const key = genKey((planRow && planRow.prefix) || "VPRO");
+    await run(`INSERT INTO license_keys(license_key, product_id, status, duration_days, note) VALUES(?, 'PROD001', 0, ?, ?)`,
+      [key, order.days, "自动发卡 " + order.out_trade_no]);
+    await run(`UPDATE orders SET status=1, trade_no=?, license_key=?, paid_at=? WHERE id=?`,
+      [p.trade_no || "", key, nowIso(), order.id]);
+  }
+  res.send("success");
+}
+app.get("/api/pay/notify", handleNotify);
+app.post("/api/pay/notify", handleNotify);
+
+// 查单取卡(公开)：买家输订单号 → 返回卡密
+app.post("/api/order/query", verifyLimiter, async (req, res) => {
+  const order = await get(`SELECT status, days, license_key FROM orders WHERE out_trade_no=?`, [(req.body || {}).out_trade_no || ""]);
+  if (!order) return res.json({ code: 404, success: false, message: "未查到该订单，请确认订单号是否正确" });
+  if (order.status === 1 && order.license_key) {
+    return res.json({ code: 200, success: true, data: { license_key: order.license_key, days: order.days } });
+  }
+  res.json({ code: 202, success: false, message: "订单尚未到账，付款后稍等几秒再查" });
+});
+
+// 订单列表(后台)
+app.get("/api/order/list", apiLimiter, adminOrApiKey("manage"), async (req, res) => {
+  const page = Math.max(parseInt(req.query.page) || 1, 1);
+  const limit = Math.min(Math.max(parseInt(req.query.limit) || 50, 1), 500);
+  const rows = await all(`SELECT out_trade_no, plan_code, days, money, pay_type, status, license_key, created_at, paid_at
+    FROM orders ORDER BY id DESC LIMIT ? OFFSET ?`, [limit, (page - 1) * limit]);
+  const total = await get(`SELECT COUNT(*) AS c FROM orders`);
+  const paid = await get(`SELECT COUNT(*) AS c FROM orders WHERE status=1`);
+  res.json({ code: 200, success: true, data: { list: rows, total: total ? total.c : 0, paid: paid ? paid.c : 0, page, limit } });
 });
 
 // 直接运行(Docker/本地)时才监听端口；Vercel 以 serverless 方式 require 本模块

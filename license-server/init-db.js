@@ -57,12 +57,53 @@ async function main() {
   await run(`CREATE INDEX IF NOT EXISTS idx_lk_status ON license_keys(status)`);
   await run(`CREATE INDEX IF NOT EXISTS idx_lk_device ON license_keys(device_id)`);
 
+  // 套餐(售卖的价格/时长，后台可改)
+  await run(`CREATE TABLE IF NOT EXISTS plans (
+    code        TEXT PRIMARY KEY,           -- 套餐代码
+    name        TEXT NOT NULL,              -- 显示名(月卡/季卡/永久…)
+    days        INTEGER NOT NULL DEFAULT 30,-- 时长天数，0=永久
+    price       TEXT NOT NULL DEFAULT '0.00',-- 售价(元)
+    enabled     INTEGER NOT NULL DEFAULT 1, -- 是否上架
+    sort        INTEGER NOT NULL DEFAULT 0,
+    prefix      TEXT DEFAULT 'VPRO'
+  )`);
+
+  // 订单(易支付自动发卡)
+  await run(`CREATE TABLE IF NOT EXISTS orders (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    out_trade_no TEXT UNIQUE NOT NULL,      -- 本系统订单号
+    plan_code    TEXT,
+    days         INTEGER DEFAULT 30,
+    money        TEXT,                       -- 金额(元)
+    pay_type     TEXT,                       -- alipay / wxpay
+    trade_no     TEXT,                       -- 支付平台流水号
+    status       INTEGER DEFAULT 0,          -- 0待支付 1已支付已发卡
+    license_key  TEXT,                       -- 发出的卡密
+    created_at    TEXT DEFAULT (datetime('now')),
+    paid_at      TEXT
+  )`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_ord_status ON orders(status)`);
+
   // 默认产品
   const prod = await get(`SELECT product_id FROM products WHERE product_id='PROD001'`);
   if (!prod) {
     await run(
       `INSERT INTO products(product_id, product_name, version) VALUES('PROD001','OnePlus V Pro','1.0.0')`
     );
+  }
+
+  // 默认套餐（价格仅为示例，请在后台“套餐价格”里改成你的实际售价）
+  const anyPlan = await get(`SELECT code FROM plans LIMIT 1`);
+  if (!anyPlan) {
+    const seed = [
+      ["yue", "月卡(30天)", 30, "9.90", 1],
+      ["ji", "季卡(90天)", 90, "25.00", 2],
+      ["nian", "年卡(365天)", 365, "88.00", 3],
+      ["forever", "永久", 0, "168.00", 4],
+    ];
+    for (const [code, name, days, price, sort] of seed) {
+      await run(`INSERT INTO plans(code, name, days, price, enabled, sort) VALUES(?,?,?,?,1,?)`, [code, name, days, price, sort]);
+    }
   }
 
   // 默认管理员（用户名/密码可用环境变量覆盖；首登后请改密码）
