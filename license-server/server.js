@@ -439,6 +439,20 @@ app.get("/api/pay/notify", handleNotify);
 app.post("/api/pay/notify", handleNotify);
 
 // 买家提交订单(半手动收款码模式)：扫码付款后填付款单号 → 建待确认订单
+// 取订单对应的有效卡密:若原卡已被删除则自动补发新卡(避免买家拿到已失效的死卡)
+async function ensureOrderKey(order) {
+  if (order.license_key) {
+    const exists = await get(`SELECT 1 FROM license_keys WHERE license_key=?`, [order.license_key]);
+    if (exists) return order.license_key;
+  }
+  const planRow = await get(`SELECT prefix FROM plans WHERE code=?`, [order.plan_code]);
+  const key = await genUniqueKey((planRow && planRow.prefix) || "VPRO");
+  await run(`INSERT INTO license_keys(license_key, product_id, status, duration_days, note) VALUES(?, 'PROD001', 0, ?, ?)`,
+    [key, order.days, "补发(原卡已删) " + order.out_trade_no]);
+  await run(`UPDATE orders SET license_key=? WHERE id=?`, [key, order.id]);
+  return key;
+}
+
 app.post("/api/order/submit", verifyLimiter, async (req, res) => {
   let { plan_code, pay_type, order_no, contact, note } = req.body || {};
   order_no = String(order_no || "").trim();
@@ -446,10 +460,12 @@ app.post("/api/order/submit", verifyLimiter, async (req, res) => {
   if (!order_no) return res.json({ code: 400, success: false, message: "请填写你的付款单号" });
   const plan = await get(`SELECT * FROM plans WHERE code=? AND enabled=1`, [plan_code || ""]);
   if (!plan) return res.json({ code: 404, success: false, message: "套餐不存在" });
-  const exist = await get(`SELECT status, license_key FROM orders WHERE out_trade_no=?`, [order_no]);
+  const exist = await get(`SELECT * FROM orders WHERE out_trade_no=?`, [order_no]);
   if (exist) {
-    if (exist.status === 1 && exist.license_key)
-      return res.json({ code: 200, success: true, message: "该订单已发卡", data: { license_key: exist.license_key } });
+    if (exist.status === 1) {
+      const key = await ensureOrderKey(exist); // 原卡被删则补发新卡
+      return res.json({ code: 200, success: true, message: "该订单已发卡", data: { license_key: key } });
+    }
     return res.json({ code: 200, success: true, message: "已提交，等待卖家确认到账后即可用此单号取卡" });
   }
   await run(`INSERT INTO orders(out_trade_no, plan_code, days, money, pay_type, status, contact, note) VALUES(?,?,?,?,?,0,?,?)`,
@@ -461,8 +477,8 @@ app.post("/api/order/submit", verifyLimiter, async (req, res) => {
 app.post("/api/order/confirm", apiLimiter, adminOrApiKey("manage"), async (req, res) => {
   const order = await get(`SELECT * FROM orders WHERE out_trade_no=?`, [(req.body || {}).out_trade_no || ""]);
   if (!order) return res.json({ code: 404, success: false, message: "订单不存在" });
-  if (order.status === 1 && order.license_key)
-    return res.json({ code: 200, success: true, message: "已发卡", data: { license_key: order.license_key } });
+  if (order.status === 1)
+    return res.json({ code: 200, success: true, message: "已发卡", data: { license_key: await ensureOrderKey(order) } });
   const planRow = await get(`SELECT prefix FROM plans WHERE code=?`, [order.plan_code]);
   const key = await genUniqueKey((planRow && planRow.prefix) || "VPRO");
   await run(`INSERT INTO license_keys(license_key, product_id, status, duration_days, note) VALUES(?, 'PROD001', 0, ?, ?)`,
@@ -494,10 +510,11 @@ app.post("/api/order/delete", apiLimiter, adminOrApiKey("manage"), async (req, r
 
 // 查单取卡(公开)：买家输订单号 → 返回卡密
 app.post("/api/order/query", verifyLimiter, async (req, res) => {
-  const order = await get(`SELECT status, days, license_key FROM orders WHERE out_trade_no=?`, [(req.body || {}).out_trade_no || ""]);
+  const order = await get(`SELECT * FROM orders WHERE out_trade_no=?`, [(req.body || {}).out_trade_no || ""]);
   if (!order) return res.json({ code: 404, success: false, message: "未查到该订单，请确认订单号是否正确" });
-  if (order.status === 1 && order.license_key) {
-    return res.json({ code: 200, success: true, data: { license_key: order.license_key, days: order.days } });
+  if (order.status === 1) {
+    const key = await ensureOrderKey(order); // 原卡被删则补发新卡
+    return res.json({ code: 200, success: true, data: { license_key: key, days: order.days } });
   }
   res.json({ code: 202, success: false, message: "卖家尚未确认到账，请稍后用此单号再查；若已付款较久请联系卖家" });
 });
