@@ -166,6 +166,7 @@ app.post("/api/verify", verifyLimiter, requireApiKey("verify"), async (req, res)
       activated_at: row.activated_at || nowIso(),
       expires_at: expires_at || null,
       remaining_days: remainingDays(expires_at),
+      note: row.note || "",                                 // 卡密备注,激活时回显给用户
       token: signToken(license_key, boundDev, expires_at), // 守护端离线校验用
     },
   });
