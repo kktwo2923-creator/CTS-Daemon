@@ -13,6 +13,13 @@
 
 namespace lic {
 
+// 项目里 qlib 命名空间也定义了 uint*,且常被 using namespace 引入全局,
+// 这里显式锚定到标准库类型,避免无限定名查找时二义。
+using std::uint8_t;
+using std::uint32_t;
+using std::uint64_t;
+using std::size_t;
+
 // ---------------- SHA-256 (public-domain 实现) ----------------
 struct Sha256 {
     uint32_t s[8];
