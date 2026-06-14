@@ -253,6 +253,22 @@ app.post("/api/license/clear", adminOrApiKey("manage"), async (req, res) => {
   res.json({ code: 200, success: true, message: "已清空", data: { deleted: r.rowsAffected ?? null } });
 });
 
+// 清理「付款单号之外」(未关联任何订单)的卡密。
+// 默认只删未使用(status=0),不碰已激活/已售,安全不影响任何人。
+// body.include_activated=true 才连同已激活一起删(有风险);body.preview=true 只返回数量不删。
+app.post("/api/license/clear-unsold", adminOrApiKey("manage"), async (req, res) => {
+  const { include_activated, preview } = req.body || {};
+  const orderSub = `SELECT license_key FROM orders WHERE license_key IS NOT NULL AND license_key<>''`;
+  const statusCond = include_activated ? "" : " AND status=0";
+  const whereDel = `license_key NOT IN (${orderSub})${statusCond}`;
+  const breakdown = await all(
+    `SELECT status, COUNT(*) c FROM license_keys WHERE license_key NOT IN (${orderSub}) GROUP BY status`);
+  const willDelete = await get(`SELECT COUNT(*) c FROM license_keys WHERE ${whereDel}`);
+  if (preview) return res.json({ code: 200, success: true, data: { to_delete: willDelete.c, breakdown } });
+  const r = await run(`DELETE FROM license_keys WHERE ${whereDel}`);
+  res.json({ code: 200, success: true, message: `已清理 ${r.rowsAffected ?? 0} 个未关联订单的卡密`, data: { deleted: r.rowsAffected ?? 0 } });
+});
+
 // ---------- 统计 ----------
 app.get("/api/stats", apiLimiter, adminOrApiKey("manage"), async (_req, res) => {
   const s = await all(`SELECT status, COUNT(*) AS c FROM license_keys GROUP BY status`);

@@ -119,6 +119,7 @@
         <button class="ghost sm" onclick="page++;loadList()">下一页</button>
         <button class="sm danger" onclick="clearKeys(0)">清空未使用</button>
         <button class="sm danger" onclick="clearKeys()">清空全部</button>
+        <button class="sm warn" onclick="clearUnsold()">清理未售卡密(未关联订单)</button>
       </div>
       <div style="overflow:auto">
         <table id="tbl"><thead><tr>
@@ -187,6 +188,14 @@ async function clearKeys(status){
   const body = status===0 ? {status:0} : {};
   const j = await api("/api/license/clear",{method:"POST",headers:authHeaders(),body:JSON.stringify(body)});
   toast(j.message||"已清空"); loadStats(); loadList();
+}
+async function clearUnsold(){
+  const pv = await api("/api/license/clear-unsold",{method:"POST",headers:authHeaders(),body:JSON.stringify({preview:true})});
+  if(!pv.success){ toast(pv.message||"失败"); return; }
+  const bd = (pv.data.breakdown||[]).map(b=>`${STATUS[b.status]||b.status}:${b.c}`).join("  ")||"无";
+  if(!confirm(`未关联订单的卡密分布：${bd}\n\n将删除其中【未使用】的 ${pv.data.to_delete} 个(不动已激活/已售,不影响任何人)。确认清理?`)) return;
+  const j = await api("/api/license/clear-unsold",{method:"POST",headers:authHeaders(),body:JSON.stringify({})});
+  toast(j.message||"已清理"); loadStats(); loadList();
 }
 async function act(action, key){
   const j = await api(`/api/license/${action}`,{method:"POST",headers:authHeaders(),body:JSON.stringify({license_key:key})});
