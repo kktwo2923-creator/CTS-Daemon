@@ -525,6 +525,14 @@ app.post("/api/billing/import", apiLimiter, adminOrApiKey("manage"), async (req,
   res.json({ code: 200, success: true, message: `本次新增 ${added} 笔`, data: { added, total: total.c, unused: unused.c } });
 });
 
+// 账单库统计(供后台常驻显示)
+app.get("/api/billing/stats", apiLimiter, adminOrApiKey("manage"), async (_req, res) => {
+  const total = await get(`SELECT COUNT(*) c FROM paid_txns`);
+  const unused = await get(`SELECT COUNT(*) c FROM paid_txns WHERE used=0`);
+  const used = await get(`SELECT COUNT(*) c FROM paid_txns WHERE used=1`);
+  res.json({ code: 200, success: true, data: { total: total.c, unused: unused.c, used: used.c } });
+});
+
 // 确认到账(后台)：核对到账后发卡
 app.post("/api/order/confirm", apiLimiter, adminOrApiKey("manage"), async (req, res) => {
   const order = await get(`SELECT * FROM orders WHERE out_trade_no=?`, [(req.body || {}).out_trade_no || ""]);

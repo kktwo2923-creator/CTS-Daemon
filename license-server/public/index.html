@@ -52,7 +52,7 @@
     <div class="row" style="justify-content:space-between">
       <h1>卡密管理后台</h1>
       <div class="row">
-        <button class="ghost sm" onclick="loadStats();loadList();loadPlansAdmin();loadOrders()">刷新</button>
+        <button class="ghost sm" onclick="loadStats();loadList();loadPlansAdmin();loadOrders();loadBillStat()">刷新</button>
         <button class="ghost sm" onclick="logout()">退出</button>
       </div>
     </div>
@@ -92,7 +92,7 @@
     <div class="card">
       <h2>导入收款账单 → 订单号自动发卡 <span id="bill-stat" class="muted"></span></h2>
       <div class="muted" style="margin-bottom:8px">导出微信/支付宝「二维码收款」账单(.xlsx)后选择文件即可导入。之后买家在购买页填的<b>付款单号</b>若与账单里「收入」记录匹配且金额达标,系统<b>自动发卡</b>,无需手动确认。可重复导入(已存在的自动跳过)。</div>
-      <input type="file" id="billfile" accept=".xlsx,.xls" onchange="importBill(this)" />
+      <input type="file" id="billfile" accept=".xlsx,.xls,.csv" onchange="importBill(this)" />
       <div id="bill-msg" class="muted" style="margin-top:8px"></div>
     </div>
 
@@ -161,14 +161,24 @@ async function importBill(input){
   const msg=document.getElementById("bill-msg"); msg.textContent="解析中…";
   try{
     await loadSheetJS();
-    const wb=XLSX.read(await file.arrayBuffer(),{type:"array"});
+    const buf=await file.arrayBuffer();
+    let wb;
+    if(/\.csv$/i.test(file.name)){
+      // 支付宝 CSV 多为 GBK;先按 GBK 解码,若中文异常再退回 UTF-8
+      let text;
+      try{ text=new TextDecoder("gbk").decode(buf); }catch(_){ text=new TextDecoder("utf-8").decode(buf); }
+      if(!/交易|时间/.test(text)) text=new TextDecoder("utf-8").decode(buf);
+      wb=XLSX.read(text,{type:"string"});
+    }else{
+      wb=XLSX.read(buf,{type:"array"});
+    }
     const ws=wb.Sheets[wb.SheetNames[0]];
     const aoa=XLSX.utils.sheet_to_json(ws,{header:1,defval:""});
-    const hi=aoa.findIndex(r=>r.some(c=>/交易单号|交易号/.test(String(c))));
-    if(hi<0){ msg.textContent="未找到表头(交易单号),请确认是微信/支付宝收款账单"; input.value=""; return; }
+    const hi=aoa.findIndex(r=>r.some(c=>/交易单号|交易订单号|交易号/.test(String(c))));
+    if(hi<0){ msg.textContent="未找到表头(交易单号/交易订单号),请确认是微信/支付宝收款账单"; input.value=""; return; }
     const head=aoa[hi].map(c=>String(c).trim());
     const col=re=>head.findIndex(h=>re.test(h));
-    const ci={no:col(/交易单号|交易号/),amt:col(/金额/),io:col(/收\/支|收支/),st:col(/当前状态|交易状态/),cp:col(/交易对方|对方/),tm:col(/交易时间|时间/)};
+    const ci={no:col(/交易单号|交易订单号|交易号/),amt:col(/金额/),io:col(/收\/支|收支/),st:col(/当前状态|交易状态/),cp:col(/交易对方|对方/),tm:col(/交易时间|时间/)};
     if(ci.no<0||ci.amt<0){ msg.textContent="账单缺少必要列(交易单号/金额)"; input.value=""; return; }
     const txns=[];
     for(let i=hi+1;i<aoa.length;i++){
@@ -183,8 +193,7 @@ async function importBill(input){
     if(!txns.length){ msg.textContent="未解析到任何「收入」记录"; input.value=""; return; }
     msg.textContent=`解析到 ${txns.length} 笔收入,导入中…`;
     const j=await api("/api/billing/import",{method:"POST",headers:authHeaders(),body:JSON.stringify({txns})});
-    if(j.success){ msg.textContent=`✅ ${j.message};账单库共 ${j.data.total} 笔(未使用 ${j.data.unused})`;
-      document.getElementById("bill-stat").textContent=`· 库存 ${j.data.unused} 笔可自动发卡`; }
+    if(j.success){ msg.textContent=`✅ ${j.message};账单库共 ${j.data.total} 笔(可自动发卡 ${j.data.unused} 笔)`; loadBillStat(); }
     else msg.textContent=j.message||"导入失败";
   }catch(e){ msg.textContent="出错:"+(e.message||e); }
   input.value="";
@@ -198,7 +207,15 @@ async function login(){
   else document.getElementById("lg-err").textContent=j.message||"登录失败";
 }
 function logout(){ token=""; localStorage.removeItem("cts_jwt"); document.getElementById("app").classList.add("hide"); document.getElementById("login").classList.remove("hide"); }
-function showApp(){ document.getElementById("login").classList.add("hide"); document.getElementById("app").classList.remove("hide"); loadStats(); loadList(); loadPlansAdmin(); loadOrders(); }
+function showApp(){ document.getElementById("login").classList.add("hide"); document.getElementById("app").classList.remove("hide"); loadStats(); loadList(); loadPlansAdmin(); loadOrders(); loadBillStat(); }
+
+async function loadBillStat(){
+  const j = await api("/api/billing/stats",{headers:authHeaders()});
+  if(j && j.success){
+    document.getElementById("bill-stat").textContent =
+      `· 账单库共 ${j.data.total} 笔(可自动发卡 ${j.data.unused} 笔,已用 ${j.data.used} 笔)`;
+  }
+}
 
 async function loadStats(){
   const j = await api("/api/stats",{headers:authHeaders()});
