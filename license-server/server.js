@@ -81,6 +81,15 @@ function genKey(prefix) {
   const seg = () => crypto.randomBytes(2).toString("hex").toUpperCase();
   return `${prefix}-${seg()}${seg()}-${seg()}${seg()}-${seg()}${seg()}-${seg()}${seg()}`;
 }
+// 保证不发重复卡密：生成后查库,撞了就重试;极端兜底加随机后缀
+async function genUniqueKey(prefix) {
+  for (let i = 0; i < 8; i++) {
+    const k = genKey(prefix);
+    const ex = await get(`SELECT 1 FROM license_keys WHERE license_key=?`, [k]);
+    if (!ex) return k;
+  }
+  return genKey(prefix) + "-" + crypto.randomBytes(3).toString("hex").toUpperCase();
+}
 function nowIso() { return new Date().toISOString(); }
 function addDays(days) { return new Date(Date.now() + days * 86400000).toISOString(); }
 function remainingDays(expiresAt) {
@@ -181,7 +190,7 @@ app.post("/api/license/generate", apiLimiter, adminOrApiKey("generate"), async (
 
   const keys = [];
   for (let i = 0; i < count; i++) {
-    const k = genKey(prefix);
+    const k = await genUniqueKey(prefix);
     await run(
       `INSERT INTO license_keys(license_key, product_id, status, duration_days, note) VALUES(?,?,0,?,?)`,
       [k, product_id, duration_days, note || ""]
@@ -194,11 +203,14 @@ app.post("/api/license/generate", apiLimiter, adminOrApiKey("generate"), async (
 // ---------- 卡密列表 ----------
 app.get("/api/license/list", apiLimiter, adminOrApiKey("manage"), async (req, res) => {
   const status = req.query.status;
+  const q = String(req.query.q || "").trim();
   const page = Math.max(parseInt(req.query.page) || 1, 1);
   const limit = Math.min(Math.max(parseInt(req.query.limit) || 50, 1), 500);
   const offset = (page - 1) * limit;
-  let where = ""; const args = [];
-  if (status !== undefined && status !== "") { where = "WHERE status=?"; args.push(parseInt(status)); }
+  const conds = []; const args = [];
+  if (status !== undefined && status !== "") { conds.push("status=?"); args.push(parseInt(status)); }
+  if (q) { conds.push("(license_key LIKE ? OR note LIKE ? OR device_id LIKE ?)"); const like = `%${q}%`; args.push(like, like, like); }
+  const where = conds.length ? "WHERE " + conds.join(" AND ") : "";
   const rows = await all(
     `SELECT id, license_key, status, duration_days, device_id, device_info, activated_at, expires_at, note, created_at
      FROM license_keys ${where} ORDER BY id DESC LIMIT ? OFFSET ?`, [...args, limit, offset]
@@ -347,7 +359,7 @@ async function alipayNotify(req, res) {
   if (order.money && p.total_amount && Number(p.total_amount) + 1e-6 < Number(order.money)) return res.send("fail");
   if (order.status === 0) {
     const planRow = await get(`SELECT prefix FROM plans WHERE code=?`, [order.plan_code]);
-    const key = genKey((planRow && planRow.prefix) || "VPRO");
+    const key = await genUniqueKey((planRow && planRow.prefix) || "VPRO");
     await run(`INSERT INTO license_keys(license_key, product_id, status, duration_days, note) VALUES(?, 'PROD001', 0, ?, ?)`,
       [key, order.days, "支付宝发卡 " + order.out_trade_no]);
     await run(`UPDATE orders SET status=1, trade_no=?, license_key=?, paid_at=? WHERE id=?`,
@@ -415,7 +427,7 @@ async function handleNotify(req, res) {
   if (order.money && p.money && Number(p.money) + 1e-6 < Number(order.money)) return res.send("fail"); // 金额校验
   if (order.status === 0) {
     const planRow = await get(`SELECT prefix FROM plans WHERE code=?`, [order.plan_code]);
-    const key = genKey((planRow && planRow.prefix) || "VPRO");
+    const key = await genUniqueKey((planRow && planRow.prefix) || "VPRO");
     await run(`INSERT INTO license_keys(license_key, product_id, status, duration_days, note) VALUES(?, 'PROD001', 0, ?, ?)`,
       [key, order.days, "自动发卡 " + order.out_trade_no]);
     await run(`UPDATE orders SET status=1, trade_no=?, license_key=?, paid_at=? WHERE id=?`,
@@ -452,7 +464,7 @@ app.post("/api/order/confirm", apiLimiter, adminOrApiKey("manage"), async (req, 
   if (order.status === 1 && order.license_key)
     return res.json({ code: 200, success: true, message: "已发卡", data: { license_key: order.license_key } });
   const planRow = await get(`SELECT prefix FROM plans WHERE code=?`, [order.plan_code]);
-  const key = genKey((planRow && planRow.prefix) || "VPRO");
+  const key = await genUniqueKey((planRow && planRow.prefix) || "VPRO");
   await run(`INSERT INTO license_keys(license_key, product_id, status, duration_days, note) VALUES(?, 'PROD001', 0, ?, ?)`,
     [key, order.days, "收款码发卡 " + order.out_trade_no]);
   await run(`UPDATE orders SET status=1, license_key=?, paid_at=? WHERE id=?`, [key, nowIso(), order.id]);
@@ -465,7 +477,7 @@ app.post("/api/order/confirm-all", adminOrApiKey("manage"), async (_req, res) =>
   let n = 0;
   for (const order of pend) {
     const planRow = await get(`SELECT prefix FROM plans WHERE code=?`, [order.plan_code]);
-    const key = genKey((planRow && planRow.prefix) || "VPRO");
+    const key = await genUniqueKey((planRow && planRow.prefix) || "VPRO");
     await run(`INSERT INTO license_keys(license_key, product_id, status, duration_days, note) VALUES(?, 'PROD001', 0, ?, ?)`,
       [key, order.days, "收款码发卡 " + order.out_trade_no]);
     await run(`UPDATE orders SET status=1, license_key=?, paid_at=? WHERE id=?`, [key, nowIso(), order.id]);
