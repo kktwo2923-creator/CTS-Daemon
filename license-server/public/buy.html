@@ -14,65 +14,71 @@
   .muted{color:var(--sub);font-size:13px;line-height:1.6;}
   .plans{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;}
   .plan{background:#0e1117;border:2px solid var(--line);border-radius:12px;padding:16px;cursor:pointer;text-align:center;transition:.15s;}
-  .plan:hover{border-color:var(--pri);}
-  .plan.sel{border-color:var(--pri);box-shadow:0 0 0 3px rgba(59,130,246,.25);}
+  .plan:hover{border-color:var(--pri);} .plan.sel{border-color:var(--pri);box-shadow:0 0 0 3px rgba(59,130,246,.25);}
   .plan .nm{font-size:15px;font-weight:600;} .plan .pr{font-size:24px;font-weight:800;color:var(--pri);margin:6px 0;}
-  .plan .pr small{font-size:13px;color:var(--sub);font-weight:600;}
-  .pay{display:flex;gap:10px;margin:14px 0;}
+  .qr{text-align:center;}
+  .qr img{max-width:100%;border-radius:12px;background:#fff;padding:8px;}
+  label{display:block;font-size:13px;color:var(--sub);margin:10px 0 4px;}
+  input{font:inherit;background:#0e1117;border:1px solid var(--line);color:var(--fg);border-radius:9px;padding:11px;width:100%;}
+  .pay{display:flex;gap:10px;margin:6px 0;}
   .pay .opt{flex:1;text-align:center;padding:10px;border:2px solid var(--line);border-radius:10px;cursor:pointer;}
   .pay .opt.sel{border-color:var(--ok);}
-  input{font:inherit;background:#0e1117;border:1px solid var(--line);color:var(--fg);border-radius:9px;padding:11px;width:100%;}
-  button{font:inherit;background:var(--pri);color:#fff;border:0;border-radius:10px;padding:12px 16px;cursor:pointer;width:100%;font-size:16px;}
-  button:disabled{opacity:.5;cursor:not-allowed;}
+  button{font:inherit;background:var(--pri);color:#fff;border:0;border-radius:10px;padding:12px 16px;cursor:pointer;width:100%;font-size:16px;margin-top:12px;}
   .keybox{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:16px;background:#0e1117;border:1px dashed var(--ok);border-radius:10px;padding:14px;text-align:center;word-break:break-all;}
-  .ok{color:var(--ok);} .err{color:#ef4444;}
-  ol{padding-left:20px;line-height:1.9;} code{background:#0e1117;padding:1px 6px;border-radius:5px;}
+  .ok{color:var(--ok);} .err{color:#ef4444;} .info{color:var(--ok);font-size:13px;margin-top:8px;}
+  ol{padding-left:20px;line-height:1.9;} b{color:var(--fg);}
 </style>
 </head>
 <body>
 <div class="wrap">
   <div class="card">
     <h1>OnePlus V Pro · 授权卡密</h1>
-    <div class="muted">选择套餐 → 扫码付款 → 自动出卡。卡密填进 App 即可激活,首次激活自动绑定本机。</div>
+    <div class="muted">扫码付款 → 填付款单号提交 → 卖家确认到账后用单号取卡。卡密填进 App 激活,首次激活自动绑定本机。</div>
   </div>
 
-  <!-- 已付款返回 / 查单取卡 结果 -->
+  <!-- 取卡结果 -->
   <div id="result" class="card" style="display:none">
     <h2>你的卡密</h2>
     <div id="keyout" class="keybox"></div>
     <div class="muted" style="margin-top:8px">请复制保存,并在 App 里输入激活。每个卡密只能绑定一台设备。</div>
-    <div style="margin-top:10px"><button onclick="copyKey()">复制卡密</button></div>
+    <button onclick="copyKey()">复制卡密</button>
   </div>
 
-  <div class="card" id="buycard">
+  <div class="card">
     <h2>① 选择套餐</h2>
     <div id="plans" class="plans"><div class="muted">加载中…</div></div>
-    <h2 style="margin-top:18px">② 选择支付方式</h2>
+  </div>
+
+  <div class="card">
+    <h2>② 扫码付款(按所选套餐金额)</h2>
     <div class="pay">
       <div class="opt sel" data-t="alipay" onclick="selPay('alipay')">支付宝</div>
-      <div class="opt" data-t="wxpay" onclick="selPay('wxpay')">微信支付</div>
+      <div class="opt" data-t="wxpay" onclick="selPay('wxpay')">微信</div>
     </div>
-    <button id="buybtn" onclick="buy()">立即购买</button>
-    <div id="buyerr" class="muted err" style="margin-top:8px"></div>
-    <div id="paytip" class="muted" style="margin-top:8px;display:none">支付未开通,请联系客服购买。</div>
+    <div class="qr"><img src="/pay-qr.png" alt="收款码" /></div>
+    <div class="muted" style="margin-top:8px">左=微信,右=支付宝。请按所选套餐的金额付款。</div>
   </div>
 
   <div class="card">
-    <h2>已付款?用订单号取卡</h2>
-    <div class="muted" style="margin-bottom:8px">付款成功页会显示订单号(CTS 开头);也会自动跳回本页显示卡密。若没看到,把订单号粘到下面查询。</div>
-    <input id="otn" placeholder="例如 CTS1718...." />
-    <div style="margin-top:10px"><button onclick="query()">查询取卡</button></div>
-    <div id="qerr" class="muted err" style="margin-top:8px"></div>
+    <h2>③ 填付款单号提交</h2>
+    <div class="muted">付完款后,在账单里复制这笔的<b>订单号/交易单号</b>填到下面。
+      <br>· 支付宝:我的→账单→该笔→订单号
+      <br>· 微信:我→服务→钱包→账单→该笔→转账单号</div>
+    <label>付款单号</label>
+    <input id="otn" placeholder="把你付款的订单号粘到这里" />
+    <label>联系方式(选填,方便卖家联系)</label>
+    <input id="contact" placeholder="QQ / 微信 / 邮箱,选填" />
+    <button onclick="submitOrder()">提交订单</button>
+    <div id="suberr" class="muted err"></div>
+    <div id="subok" class="info"></div>
   </div>
 
   <div class="card">
-    <h2>使用说明</h2>
-    <ol class="muted">
-      <li>选套餐 + 支付方式,点「立即购买」,扫码付款。</li>
-      <li>付款后自动跳回本页并显示卡密;若没跳回,用订单号查询。</li>
-      <li>打开 App,输入卡密激活。卡密会绑定到你这台设备。</li>
-      <li>问题联系客服。</li>
-    </ol>
+    <h2>④ 取卡(卖家确认后)</h2>
+    <div class="muted" style="margin-bottom:8px">卖家确认到账后(通常几分钟),用上面的付款单号点这里取卡。</div>
+    <input id="qotn" placeholder="付款单号" />
+    <button onclick="query()">查询取卡</button>
+    <div id="qerr" class="muted err"></div>
   </div>
 </div>
 
@@ -94,37 +100,33 @@ async function loadPlans(){
       <div class="nm">${p.name}</div><div class="pr">¥${p.price}</div>
       <div class="muted">${p.days==0?'永久':p.days+' 天'}</div></div>`).join("");
     selPlan = plans[0];
-    if(j.data && !j.data.pay_enabled){
-      document.getElementById("buybtn").disabled=true;
-      document.getElementById("paytip").style.display="block";
-    }
   }catch(e){ document.getElementById("plans").innerHTML='<div class="muted err">加载失败</div>'; }
 }
 function selPlanIdx(i){ selPlan=plans[i]; document.querySelectorAll(".plan").forEach(p=>p.classList.toggle("sel",+p.dataset.i===i)); }
 
-async function buy(){
-  document.getElementById("buyerr").textContent="";
-  if(!selPlan){ document.getElementById("buyerr").textContent="请先选择套餐"; return; }
-  const j = await (await fetch(API+"/api/pay/create",{method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({plan_code:selPlan.code,pay_type:payType})})).json();
-  if(j.success && j.data.pay_url){ location.href=j.data.pay_url; }
-  else document.getElementById("buyerr").textContent=j.message||"下单失败";
+async function submitOrder(){
+  document.getElementById("suberr").textContent=""; document.getElementById("subok").textContent="";
+  if(!selPlan){ document.getElementById("suberr").textContent="请先选套餐"; return; }
+  const order_no=document.getElementById("otn").value.trim();
+  if(!order_no){ document.getElementById("suberr").textContent="请填付款单号"; return; }
+  const j = await (await fetch(API+"/api/order/submit",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({plan_code:selPlan.code,pay_type:payType,order_no,contact:document.getElementById("contact").value.trim()})})).json();
+  if(j.success && j.data && j.data.license_key){ showKey(j.data.license_key); }
+  else if(j.success){ document.getElementById("subok").textContent=j.message; document.getElementById("qotn").value=order_no; }
+  else document.getElementById("suberr").textContent=j.message||"提交失败";
 }
 
 async function query(){
   document.getElementById("qerr").textContent="";
-  const otn=document.getElementById("otn").value.trim();
-  if(!otn){ document.getElementById("qerr").textContent="请输入订单号"; return; }
+  const otn=(document.getElementById("qotn").value||document.getElementById("otn").value).trim();
+  if(!otn){ document.getElementById("qerr").textContent="请输入付款单号"; return; }
   const j = await (await fetch(API+"/api/order/query",{method:"POST",headers:{"Content-Type":"application/json"},
     body:JSON.stringify({out_trade_no:otn})})).json();
   if(j.success){ showKey(j.data.license_key); }
   else document.getElementById("qerr").textContent=j.message||"查询失败";
 }
 
-// 支付返回:URL 带 out_trade_no 时自动查卡
 loadPlans();
-const otn = new URLSearchParams(location.search).get("out_trade_no");
-if(otn){ document.getElementById("otn").value=otn; setTimeout(query,800); }
 </script>
 </body>
 </html>

@@ -337,6 +337,45 @@ async function handleNotify(req, res) {
 app.get("/api/pay/notify", handleNotify);
 app.post("/api/pay/notify", handleNotify);
 
+// 买家提交订单(半手动收款码模式)：扫码付款后填付款单号 → 建待确认订单
+app.post("/api/order/submit", verifyLimiter, async (req, res) => {
+  let { plan_code, pay_type, order_no, contact } = req.body || {};
+  order_no = String(order_no || "").trim();
+  pay_type = pay_type === "wxpay" ? "wxpay" : "alipay";
+  if (!order_no) return res.json({ code: 400, success: false, message: "请填写你的付款单号" });
+  const plan = await get(`SELECT * FROM plans WHERE code=? AND enabled=1`, [plan_code || ""]);
+  if (!plan) return res.json({ code: 404, success: false, message: "套餐不存在" });
+  const exist = await get(`SELECT status, license_key FROM orders WHERE out_trade_no=?`, [order_no]);
+  if (exist) {
+    if (exist.status === 1 && exist.license_key)
+      return res.json({ code: 200, success: true, message: "该订单已发卡", data: { license_key: exist.license_key } });
+    return res.json({ code: 200, success: true, message: "已提交，等待卖家确认到账后即可用此单号取卡" });
+  }
+  await run(`INSERT INTO orders(out_trade_no, plan_code, days, money, pay_type, status, contact) VALUES(?,?,?,?,?,0,?)`,
+    [order_no, plan.code, plan.days, String(plan.price), pay_type, String(contact || "").slice(0, 60)]);
+  res.json({ code: 200, success: true, message: "已提交！卖家确认到账后，用此单号点“查询取卡”即可拿到卡密" });
+});
+
+// 确认到账(后台)：核对到账后发卡
+app.post("/api/order/confirm", apiLimiter, adminOrApiKey("manage"), async (req, res) => {
+  const order = await get(`SELECT * FROM orders WHERE out_trade_no=?`, [(req.body || {}).out_trade_no || ""]);
+  if (!order) return res.json({ code: 404, success: false, message: "订单不存在" });
+  if (order.status === 1 && order.license_key)
+    return res.json({ code: 200, success: true, message: "已发卡", data: { license_key: order.license_key } });
+  const planRow = await get(`SELECT prefix FROM plans WHERE code=?`, [order.plan_code]);
+  const key = genKey((planRow && planRow.prefix) || "VPRO");
+  await run(`INSERT INTO license_keys(license_key, product_id, status, duration_days, note) VALUES(?, 'PROD001', 0, ?, ?)`,
+    [key, order.days, "收款码发卡 " + order.out_trade_no]);
+  await run(`UPDATE orders SET status=1, license_key=?, paid_at=? WHERE id=?`, [key, nowIso(), order.id]);
+  res.json({ code: 200, success: true, message: "已确认并发卡", data: { license_key: key } });
+});
+
+// 删除订单(后台)
+app.post("/api/order/delete", apiLimiter, adminOrApiKey("manage"), async (req, res) => {
+  await run(`DELETE FROM orders WHERE out_trade_no=?`, [(req.body || {}).out_trade_no || ""]);
+  res.json({ code: 200, success: true, message: "已删除" });
+});
+
 // 查单取卡(公开)：买家输订单号 → 返回卡密
 app.post("/api/order/query", verifyLimiter, async (req, res) => {
   const order = await get(`SELECT status, days, license_key FROM orders WHERE out_trade_no=?`, [(req.body || {}).out_trade_no || ""]);
@@ -344,14 +383,14 @@ app.post("/api/order/query", verifyLimiter, async (req, res) => {
   if (order.status === 1 && order.license_key) {
     return res.json({ code: 200, success: true, data: { license_key: order.license_key, days: order.days } });
   }
-  res.json({ code: 202, success: false, message: "订单尚未到账，付款后稍等几秒再查" });
+  res.json({ code: 202, success: false, message: "卖家尚未确认到账，请稍后用此单号再查；若已付款较久请联系卖家" });
 });
 
 // 订单列表(后台)
 app.get("/api/order/list", apiLimiter, adminOrApiKey("manage"), async (req, res) => {
   const page = Math.max(parseInt(req.query.page) || 1, 1);
   const limit = Math.min(Math.max(parseInt(req.query.limit) || 50, 1), 500);
-  const rows = await all(`SELECT out_trade_no, plan_code, days, money, pay_type, status, license_key, created_at, paid_at
+  const rows = await all(`SELECT out_trade_no, plan_code, days, money, pay_type, status, license_key, contact, created_at, paid_at
     FROM orders ORDER BY id DESC LIMIT ? OFFSET ?`, [limit, (page - 1) * limit]);
   const total = await get(`SELECT COUNT(*) AS c FROM orders`);
   const paid = await get(`SELECT COUNT(*) AS c FROM orders WHERE status=1`);

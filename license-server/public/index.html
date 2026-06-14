@@ -90,11 +90,12 @@
     </div>
 
     <div class="card">
-      <h2>订单(自动发卡)</h2>
+      <h2>订单 / 确认到账发卡</h2>
+      <div class="muted" style="margin-bottom:8px">买家付款后在购买页填单号提交,这里出现「待确认」。你在微信/支付宝核对到账后点「确认发卡」,买家即可用单号取卡。</div>
       <div class="stat" id="ostat" style="grid-template-columns:repeat(2,1fr);max-width:320px"></div>
       <div style="overflow:auto;margin-top:10px">
         <table id="otbl"><thead><tr>
-          <th>订单号</th><th>套餐</th><th>金额</th><th>方式</th><th>状态</th><th>卡密</th><th>时间</th>
+          <th>付款单号</th><th>套餐</th><th>金额</th><th>方式</th><th>联系</th><th>状态</th><th>卡密</th><th>时间</th><th>操作</th>
         </tr></thead><tbody></tbody></table>
       </div>
     </div>
@@ -193,7 +194,7 @@ async function loadPlansAdmin(){
   const j = await api("/api/plans/all",{headers:authHeaders()});
   if(!j.success){ if(j.code===401) logout(); return; }
   planRows=j.data.plans||[];
-  document.getElementById("pay-status").textContent = j.data.pay_enabled ? "· 支付已开通 ✅" : "· 支付未配置(把易支付密钥发给部署者填入)";
+  document.getElementById("pay-status").textContent = "· 收款方式:收款码(半手动,到账后在下方订单里点确认发卡)";
   renderPlans();
 }
 function renderPlans(){
@@ -229,12 +230,24 @@ async function loadOrders(){
     [["订单总数",j.data.total],["已支付",j.data.paid]].map(([t,n])=>`<div class="b"><div class="n">${n}</div><div class="t">${t}</div></div>`).join("");
   const tb=document.querySelector("#otbl tbody"); tb.innerHTML="";
   for(const o of j.data.list){
+    const ono=(o.out_trade_no||'').replace(/'/g,"");
     tb.innerHTML += `<tr><td class="key">${o.out_trade_no}</td><td>${o.plan_code||''}(${o.days==0?'永久':o.days+'天'})</td>
       <td>¥${o.money||''}</td><td>${o.pay_type==='wxpay'?'微信':'支付宝'}</td>
-      <td><span class="pill ${o.status==1?'s1':'s0'}">${o.status==1?'已支付':'待支付'}</span></td>
+      <td class="muted">${o.contact||'-'}</td>
+      <td><span class="pill ${o.status==1?'s1':'s0'}">${o.status==1?'已发卡':'待确认'}</span></td>
       <td class="key">${o.license_key?o.license_key+` <button class="sm ghost" onclick="copy('${o.license_key}')">复制</button>`:'-'}</td>
-      <td class="muted">${(o.paid_at||o.created_at||'').slice(0,16)}</td></tr>`;
+      <td class="muted">${(o.paid_at||o.created_at||'').slice(0,16)}</td>
+      <td>${o.status==1?'':`<button class="sm" onclick="confirmOrder('${ono}')">确认发卡</button>`}
+          <button class="sm ghost" onclick="if(confirm('删除该订单?'))delOrder('${ono}')">删</button></td></tr>`;
   }
+}
+async function confirmOrder(ono){
+  const j=await api("/api/order/confirm",{method:"POST",headers:authHeaders(),body:JSON.stringify({out_trade_no:ono})});
+  toast(j.message||"已确认"); loadOrders(); loadStats(); loadList();
+}
+async function delOrder(ono){
+  const j=await api("/api/order/delete",{method:"POST",headers:authHeaders(),body:JSON.stringify({out_trade_no:ono})});
+  toast(j.message||"已删除"); loadOrders();
 }
 
 // 自动登录
