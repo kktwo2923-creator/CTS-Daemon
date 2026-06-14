@@ -17,7 +17,7 @@
   .plan:hover{border-color:var(--pri);} .plan.sel{border-color:var(--pri);box-shadow:0 0 0 3px rgba(59,130,246,.25);}
   .plan .nm{font-size:15px;font-weight:600;} .plan .pr{font-size:24px;font-weight:800;color:var(--pri);margin:6px 0;}
   .qr{text-align:center;}
-  .qr img{max-width:100%;border-radius:12px;background:#fff;padding:8px;}
+  .qr img{width:100%;max-width:560px;border-radius:12px;background:#fff;padding:6px;}
   label{display:block;font-size:13px;color:var(--sub);margin:10px 0 4px;}
   input{font:inherit;background:#0e1117;border:1px solid var(--line);color:var(--fg);border-radius:9px;padding:11px;width:100%;}
   .pay{display:flex;gap:10px;margin:6px 0;}
@@ -58,10 +58,6 @@
 
   <div class="card">
     <h2>② 扫码付款(按所选套餐金额)</h2>
-    <div class="pay">
-      <div class="opt sel" data-t="alipay" onclick="selPay('alipay')">支付宝</div>
-      <div class="opt" data-t="wxpay" onclick="selPay('wxpay')">微信</div>
-    </div>
     <div class="qr"><img src="/pay-qr.png" alt="收款码" /></div>
     <div class="muted" style="margin-top:8px">左=微信,右=支付宝。请按所选套餐的金额付款。</div>
   </div>
