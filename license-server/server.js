@@ -232,6 +232,15 @@ app.post("/api/license/delete", apiLimiter, adminOrApiKey("manage"), async (req,
   res.json({ code: 200, success: true, message: "已删除" });
 });
 
+// 批量清空卡密：body.status 指定状态(0未用/1激活/2过期/3禁用)，不传=全部。一次性删除
+app.post("/api/license/clear", adminOrApiKey("manage"), async (req, res) => {
+  const { status } = req.body || {};
+  const r = (status !== undefined && status !== "" && status !== null)
+    ? await run(`DELETE FROM license_keys WHERE status=?`, [parseInt(status)])
+    : await run(`DELETE FROM license_keys`);
+  res.json({ code: 200, success: true, message: "已清空", data: { deleted: r.rowsAffected ?? null } });
+});
+
 // ---------- 统计 ----------
 app.get("/api/stats", apiLimiter, adminOrApiKey("manage"), async (_req, res) => {
   const s = await all(`SELECT status, COUNT(*) AS c FROM license_keys GROUP BY status`);
