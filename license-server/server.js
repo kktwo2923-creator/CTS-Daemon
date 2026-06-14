@@ -379,6 +379,21 @@ app.post("/api/order/confirm", apiLimiter, adminOrApiKey("manage"), async (req, 
   res.json({ code: 200, success: true, message: "已确认并发卡", data: { license_key: key } });
 });
 
+// 一键通过(后台)：把所有待确认订单一次性发卡
+app.post("/api/order/confirm-all", adminOrApiKey("manage"), async (_req, res) => {
+  const pend = await all(`SELECT * FROM orders WHERE status=0`);
+  let n = 0;
+  for (const order of pend) {
+    const planRow = await get(`SELECT prefix FROM plans WHERE code=?`, [order.plan_code]);
+    const key = genKey((planRow && planRow.prefix) || "VPRO");
+    await run(`INSERT INTO license_keys(license_key, product_id, status, duration_days, note) VALUES(?, 'PROD001', 0, ?, ?)`,
+      [key, order.days, "收款码发卡 " + order.out_trade_no]);
+    await run(`UPDATE orders SET status=1, license_key=?, paid_at=? WHERE id=?`, [key, nowIso(), order.id]);
+    n++;
+  }
+  res.json({ code: 200, success: true, message: `已通过 ${n} 单`, data: { count: n } });
+});
+
 // 删除订单(后台)
 app.post("/api/order/delete", apiLimiter, adminOrApiKey("manage"), async (req, res) => {
   await run(`DELETE FROM orders WHERE out_trade_no=?`, [(req.body || {}).out_trade_no || ""]);

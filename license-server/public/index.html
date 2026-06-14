@@ -90,8 +90,11 @@
     </div>
 
     <div class="card">
-      <h2>订单 / 确认到账发卡</h2>
-      <div class="muted" style="margin-bottom:8px">买家付款后在购买页填单号提交,这里出现「待确认」。你在微信/支付宝核对到账后点「确认发卡」,买家即可用单号取卡。</div>
+      <div class="row" style="justify-content:space-between">
+        <h2>订单 / 确认到账发卡</h2>
+        <button class="sm" onclick="confirmAll()">一键通过全部待确认</button>
+      </div>
+      <div class="muted" style="margin-bottom:8px">买家付款后在购买页填单号提交,这里出现「待确认」。核对到账后点「确认发卡」或「一键通过」,买家即可用单号取卡。</div>
       <div class="stat" id="ostat" style="grid-template-columns:repeat(2,1fr);max-width:320px"></div>
       <div style="overflow:auto;margin-top:10px">
         <table id="otbl"><thead><tr>
@@ -249,6 +252,11 @@ async function loadOrders(){
       <td>${o.status==1?'':`<button class="sm" onclick="confirmOrder('${ono}')">确认发卡</button>`}
           <button class="sm ghost" onclick="if(confirm('删除该订单?'))delOrder('${ono}')">删</button></td></tr>`;
   }
+}
+async function confirmAll(){
+  if(!confirm("把所有【待确认】订单一次性通过并发卡?")) return;
+  const j=await api("/api/order/confirm-all",{method:"POST",headers:authHeaders(),body:"{}"});
+  toast(j.message||"已通过"); loadOrders(); loadStats(); loadList();
 }
 async function confirmOrder(ono){
   const j=await api("/api/order/confirm",{method:"POST",headers:authHeaders(),body:JSON.stringify({out_trade_no:ono})});
