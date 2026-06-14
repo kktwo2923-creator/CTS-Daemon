@@ -82,20 +82,36 @@
         "Core7": "0"
       },
       "gov_c0": {
-        "governor": "conservative"
+        "governor": "walt",
+        "params": {
+          "up_rate_limit_us": "1000",
+          "down_rate_limit_us": "0"
+        }
       },
       "gov_c1": {
-        "governor": "conservative"
+        "governor": "walt",
+        "params": {
+          "up_rate_limit_us": "1000",
+          "down_rate_limit_us": "0"
+        }
       },
       "freq_min_c2": "537600",
       "freq_max_c2": "1800000",
       "gov_c2": {
-        "governor": "conservative"
+        "governor": "walt",
+        "params": {
+          "up_rate_limit_us": "1000",
+          "down_rate_limit_us": "0"
+        }
       },
       "freq_min_c3": "537600",
       "freq_max_c3": "1800000",
       "gov_c3": {
-        "governor": "conservative"
+        "governor": "walt",
+        "params": {
+          "up_rate_limit_us": "1000",
+          "down_rate_limit_us": "0"
+        }
       }
     },
     {
@@ -377,20 +393,36 @@
         "Core7": "0"
       },
       "gov_c0": {
-        "governor": "conservative"
+        "governor": "walt",
+        "params": {
+          "up_rate_limit_us": "1000",
+          "down_rate_limit_us": "0"
+        }
       },
       "gov_c1": {
-        "governor": "conservative"
+        "governor": "walt",
+        "params": {
+          "up_rate_limit_us": "1000",
+          "down_rate_limit_us": "0"
+        }
       },
       "freq_min_c2": "537600",
       "freq_max_c2": "1400000",
       "gov_c2": {
-        "governor": "conservative"
+        "governor": "walt",
+        "params": {
+          "up_rate_limit_us": "1000",
+          "down_rate_limit_us": "0"
+        }
       },
       "freq_min_c3": "537600",
       "freq_max_c3": "1400000",
       "gov_c3": {
-        "governor": "conservative"
+        "governor": "walt",
+        "params": {
+          "up_rate_limit_us": "1000",
+          "down_rate_limit_us": "0"
+        }
       }
     },
     {
@@ -419,20 +451,36 @@
         "Core7": "0"
       },
       "gov_c0": {
-        "governor": "conservative"
+        "governor": "walt",
+        "params": {
+          "up_rate_limit_us": "1000",
+          "down_rate_limit_us": "0"
+        }
       },
       "gov_c1": {
-        "governor": "conservative"
+        "governor": "walt",
+        "params": {
+          "up_rate_limit_us": "1000",
+          "down_rate_limit_us": "0"
+        }
       },
       "freq_min_c2": "768000",
       "freq_max_c2": "2200000",
       "gov_c2": {
-        "governor": "conservative"
+        "governor": "walt",
+        "params": {
+          "up_rate_limit_us": "1000",
+          "down_rate_limit_us": "0"
+        }
       },
       "freq_min_c3": "768000",
       "freq_max_c3": "2400000",
       "gov_c3": {
-        "governor": "conservative"
+        "governor": "walt",
+        "params": {
+          "up_rate_limit_us": "1000",
+          "down_rate_limit_us": "0"
+        }
       }
     },
     {
@@ -461,20 +509,36 @@
         "Core7": "0"
       },
       "gov_c0": {
-        "governor": "conservative"
+        "governor": "walt",
+        "params": {
+          "up_rate_limit_us": "1000",
+          "down_rate_limit_us": "0"
+        }
       },
       "gov_c1": {
-        "governor": "conservative"
+        "governor": "walt",
+        "params": {
+          "up_rate_limit_us": "1000",
+          "down_rate_limit_us": "0"
+        }
       },
       "freq_min_c2": "537600",
       "freq_max_c2": "1555200",
       "gov_c2": {
-        "governor": "conservative"
+        "governor": "walt",
+        "params": {
+          "up_rate_limit_us": "1000",
+          "down_rate_limit_us": "0"
+        }
       },
       "freq_min_c3": "537600",
       "freq_max_c3": "1555200",
       "gov_c3": {
-        "governor": "conservative"
+        "governor": "walt",
+        "params": {
+          "up_rate_limit_us": "1000",
+          "down_rate_limit_us": "0"
+        }
       }
     },
     {
@@ -505,20 +569,36 @@
         "Core7": "0"
       },
       "gov_c0": {
-        "governor": "conservative"
+        "governor": "walt",
+        "params": {
+          "up_rate_limit_us": "1000",
+          "down_rate_limit_us": "0"
+        }
       },
       "gov_c1": {
-        "governor": "conservative"
+        "governor": "walt",
+        "params": {
+          "up_rate_limit_us": "1000",
+          "down_rate_limit_us": "0"
+        }
       },
       "freq_min_c2": "384000",
       "freq_max_c2": "1300000",
       "gov_c2": {
-        "governor": "conservative"
+        "governor": "walt",
+        "params": {
+          "up_rate_limit_us": "1000",
+          "down_rate_limit_us": "0"
+        }
       },
       "freq_min_c3": "384000",
       "freq_max_c3": "1300000",
       "gov_c3": {
-        "governor": "conservative"
+        "governor": "walt",
+        "params": {
+          "up_rate_limit_us": "1000",
+          "down_rate_limit_us": "0"
+        }
       }
     }
   ]

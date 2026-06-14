@@ -82,10 +82,18 @@
         "Core7": "0"
       },
       "gov_c0": {
-        "governor": "conservative"
+        "governor": "walt",
+        "params": {
+          "up_rate_limit_us": "1000",
+          "down_rate_limit_us": "0"
+        }
       },
       "gov_c1": {
-        "governor": "conservative"
+        "governor": "walt",
+        "params": {
+          "up_rate_limit_us": "1000",
+          "down_rate_limit_us": "0"
+        }
       }
     },
     {
@@ -257,10 +265,18 @@
         "Core7": "0"
       },
       "gov_c0": {
-        "governor": "conservative"
+        "governor": "walt",
+        "params": {
+          "up_rate_limit_us": "1000",
+          "down_rate_limit_us": "0"
+        }
       },
       "gov_c1": {
-        "governor": "conservative"
+        "governor": "walt",
+        "params": {
+          "up_rate_limit_us": "1000",
+          "down_rate_limit_us": "0"
+        }
       }
     },
     {
@@ -279,10 +295,18 @@
       "freq_max_c1": "2880000",
       "gpu_min_mhz": "160",
       "gov_c0": {
-        "governor": "conservative"
+        "governor": "walt",
+        "params": {
+          "up_rate_limit_us": "1000",
+          "down_rate_limit_us": "0"
+        }
       },
       "gov_c1": {
-        "governor": "conservative"
+        "governor": "walt",
+        "params": {
+          "up_rate_limit_us": "1000",
+          "down_rate_limit_us": "0"
+        }
       }
     },
     {
@@ -301,10 +325,18 @@
       "gpu_min_mhz": "160",
       "gpu_max_mhz": "500",
       "gov_c0": {
-        "governor": "conservative"
+        "governor": "walt",
+        "params": {
+          "up_rate_limit_us": "1000",
+          "down_rate_limit_us": "0"
+        }
       },
       "gov_c1": {
-        "governor": "conservative"
+        "governor": "walt",
+        "params": {
+          "up_rate_limit_us": "1000",
+          "down_rate_limit_us": "0"
+        }
       }
     },
     {
@@ -325,10 +357,18 @@
       "gpu_min_mhz": "160",
       "gpu_max_mhz": "400",
       "gov_c0": {
-        "governor": "conservative"
+        "governor": "walt",
+        "params": {
+          "up_rate_limit_us": "1000",
+          "down_rate_limit_us": "0"
+        }
       },
       "gov_c1": {
-        "governor": "conservative"
+        "governor": "walt",
+        "params": {
+          "up_rate_limit_us": "1000",
+          "down_rate_limit_us": "0"
+        }
       }
     }
   ]
