@@ -477,16 +477,52 @@ app.post("/api/order/submit", verifyLimiter, async (req, res) => {
   const plan = await get(`SELECT * FROM plans WHERE code=? AND enabled=1`, [plan_code || ""]);
   if (!plan) return res.json({ code: 404, success: false, message: "套餐不存在" });
   const exist = await get(`SELECT * FROM orders WHERE out_trade_no=?`, [order_no]);
-  if (exist) {
-    if (exist.status === 1) {
-      const key = await ensureOrderKey(exist); // 原卡被删则补发新卡
-      return res.json({ code: 200, success: true, message: "该订单已发卡", data: { license_key: key } });
+  if (exist && exist.status === 1) {
+    const key = await ensureOrderKey(exist); // 原卡被删则补发新卡
+    return res.json({ code: 200, success: true, message: "该订单已发卡", data: { license_key: key } });
+  }
+
+  // 自动核验：付款单号匹配已导入账单里「未使用、金额达标」的收款 → 直接发卡
+  const txn = await get(`SELECT * FROM paid_txns WHERE txn_no=? AND used=0`, [order_no]);
+  if (txn && Number(txn.amount) + 1e-6 >= Number(plan.price)) {
+    const key = await genUniqueKey(plan.prefix || "VPRO");
+    await run(`INSERT INTO license_keys(license_key, product_id, status, duration_days, note) VALUES(?, 'PROD001', 0, ?, ?)`,
+      [key, plan.days, "账单匹配自动发卡 " + order_no]);
+    if (exist) {
+      await run(`UPDATE orders SET status=1, license_key=?, paid_at=?, contact=?, note=? WHERE id=?`,
+        [key, nowIso(), String(contact || "").slice(0, 60), String(note || "").slice(0, 200), exist.id]);
+    } else {
+      await run(`INSERT INTO orders(out_trade_no, plan_code, days, money, pay_type, status, license_key, paid_at, contact, note) VALUES(?,?,?,?,?,1,?,?,?,?)`,
+        [order_no, plan.code, plan.days, String(plan.price), pay_type, key, nowIso(), String(contact || "").slice(0, 60), String(note || "").slice(0, 200)]);
     }
+    await run(`UPDATE paid_txns SET used=1, used_order=? WHERE txn_no=?`, [order_no, order_no]);
+    return res.json({ code: 200, success: true, message: "支付已核验，自动发卡成功", data: { license_key: key } });
+  }
+
+  if (exist) {
     return res.json({ code: 200, success: true, message: "已提交，等待卖家确认到账后即可用此单号取卡" });
   }
   await run(`INSERT INTO orders(out_trade_no, plan_code, days, money, pay_type, status, contact, note) VALUES(?,?,?,?,?,0,?,?)`,
     [order_no, plan.code, plan.days, String(plan.price), pay_type, String(contact || "").slice(0, 60), String(note || "").slice(0, 200)]);
   res.json({ code: 200, success: true, message: "已提交！卖家确认到账后，用此单号点“查询取卡”即可拿到卡密" });
+});
+
+// 导入收款账单(微信/支付宝),用于订单号匹配自动发卡。body.txns=[{txn_no,amount,counterparty,time}]
+app.post("/api/billing/import", apiLimiter, adminOrApiKey("manage"), async (req, res) => {
+  const txns = Array.isArray((req.body || {}).txns) ? req.body.txns : [];
+  let added = 0;
+  for (const t of txns) {
+    const no = String(t.txn_no || "").trim();
+    if (!no) continue;
+    const r = await run(
+      `INSERT OR IGNORE INTO paid_txns(txn_no, amount, counterparty, paid_time) VALUES(?,?,?,?)`,
+      [no, String(t.amount || ""), String(t.counterparty || "").slice(0, 40), String(t.time || "")]
+    );
+    if (r.rowsAffected) added += r.rowsAffected;
+  }
+  const total = await get(`SELECT COUNT(*) c FROM paid_txns`);
+  const unused = await get(`SELECT COUNT(*) c FROM paid_txns WHERE used=0`);
+  res.json({ code: 200, success: true, message: `本次新增 ${added} 笔`, data: { added, total: total.c, unused: unused.c } });
 });
 
 // 确认到账(后台)：核对到账后发卡

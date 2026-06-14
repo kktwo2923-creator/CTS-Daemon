@@ -90,6 +90,13 @@
     </div>
 
     <div class="card">
+      <h2>导入收款账单 → 订单号自动发卡 <span id="bill-stat" class="muted"></span></h2>
+      <div class="muted" style="margin-bottom:8px">导出微信/支付宝「二维码收款」账单(.xlsx)后选择文件即可导入。之后买家在购买页填的<b>付款单号</b>若与账单里「收入」记录匹配且金额达标,系统<b>自动发卡</b>,无需手动确认。可重复导入(已存在的自动跳过)。</div>
+      <input type="file" id="billfile" accept=".xlsx,.xls" onchange="importBill(this)" />
+      <div id="bill-msg" class="muted" style="margin-top:8px"></div>
+    </div>
+
+    <div class="card">
       <div class="row" style="justify-content:space-between">
         <h2>订单 / 确认到账发卡</h2>
         <button class="sm" onclick="confirmAll()">一键通过全部待确认</button>
@@ -139,6 +146,49 @@ let page = 1, lastGen = [];
 function toast(m){ const t=document.getElementById("toast"); t.textContent=m; t.classList.remove("hide"); setTimeout(()=>t.classList.add("hide"),1800); }
 function authHeaders(){ return { "Content-Type":"application/json", "Authorization":"Bearer "+token }; }
 async function api(path, opts={}){ const r = await fetch(API+path, opts); return r.json(); }
+
+function loadSheetJS(){
+  return new Promise((resolve,reject)=>{
+    if(window.XLSX) return resolve();
+    const s=document.createElement("script");
+    s.src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js";
+    s.onload=()=>resolve(); s.onerror=()=>reject(new Error("SheetJS 加载失败,请检查网络/梯子"));
+    document.head.appendChild(s);
+  });
+}
+async function importBill(input){
+  const file=input.files&&input.files[0]; if(!file) return;
+  const msg=document.getElementById("bill-msg"); msg.textContent="解析中…";
+  try{
+    await loadSheetJS();
+    const wb=XLSX.read(await file.arrayBuffer(),{type:"array"});
+    const ws=wb.Sheets[wb.SheetNames[0]];
+    const aoa=XLSX.utils.sheet_to_json(ws,{header:1,defval:""});
+    const hi=aoa.findIndex(r=>r.some(c=>/交易单号|交易号/.test(String(c))));
+    if(hi<0){ msg.textContent="未找到表头(交易单号),请确认是微信/支付宝收款账单"; input.value=""; return; }
+    const head=aoa[hi].map(c=>String(c).trim());
+    const col=re=>head.findIndex(h=>re.test(h));
+    const ci={no:col(/交易单号|交易号/),amt:col(/金额/),io:col(/收\/支|收支/),st:col(/当前状态|交易状态/),cp:col(/交易对方|对方/),tm:col(/交易时间|时间/)};
+    if(ci.no<0||ci.amt<0){ msg.textContent="账单缺少必要列(交易单号/金额)"; input.value=""; return; }
+    const txns=[];
+    for(let i=hi+1;i<aoa.length;i++){
+      const r=aoa[i]; if(!r||!r.length) continue;
+      const io=String(r[ci.io]||""), st=String(r[ci.st]||"");
+      const income = io.includes("收入") || /已收钱|收款成功|交易成功/.test(st);
+      if(io && !income) continue;            // 有收/支列时只取收入;无该列则按金额行收
+      const no=String(r[ci.no]||"").trim(); if(!no||no==="/") continue;
+      const amt=String(r[ci.amt]||"").replace(/[^\d.]/g,""); if(!amt) continue;
+      txns.push({txn_no:no,amount:amt,counterparty:String(r[ci.cp]||"").slice(0,40),time:String(r[ci.tm]||"")});
+    }
+    if(!txns.length){ msg.textContent="未解析到任何「收入」记录"; input.value=""; return; }
+    msg.textContent=`解析到 ${txns.length} 笔收入,导入中…`;
+    const j=await api("/api/billing/import",{method:"POST",headers:authHeaders(),body:JSON.stringify({txns})});
+    if(j.success){ msg.textContent=`✅ ${j.message};账单库共 ${j.data.total} 笔(未使用 ${j.data.unused})`;
+      document.getElementById("bill-stat").textContent=`· 库存 ${j.data.unused} 笔可自动发卡`; }
+    else msg.textContent=j.message||"导入失败";
+  }catch(e){ msg.textContent="出错:"+(e.message||e); }
+  input.value="";
+}
 
 async function login(){
   const username=document.getElementById("lg-user").value.trim();

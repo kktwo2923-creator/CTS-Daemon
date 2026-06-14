@@ -88,6 +88,18 @@ async function main() {
   try { await run(`ALTER TABLE orders ADD COLUMN contact TEXT`); } catch (_) { /* 旧库补列，已存在则忽略 */ }
   try { await run(`ALTER TABLE orders ADD COLUMN note TEXT`); } catch (_) { /* 旧库补列，已存在则忽略 */ }
 
+  // 导入的收款账单(微信/支付宝),用于「订单号匹配自动发卡」
+  await run(`CREATE TABLE IF NOT EXISTS paid_txns (
+    txn_no       TEXT PRIMARY KEY,          -- 交易单号(买家提交的付款单号需与此匹配)
+    amount       TEXT,                       -- 金额(元)
+    counterparty TEXT,                       -- 交易对方
+    paid_time    TEXT,                       -- 交易时间
+    used         INTEGER DEFAULT 0,          -- 是否已用于某订单发卡
+    used_order   TEXT,                        -- 使用它的订单号
+    imported_at  TEXT DEFAULT (datetime('now'))
+  )`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_txn_used ON paid_txns(used)`);
+
   // 默认产品
   const prod = await get(`SELECT product_id FROM products WHERE product_id='PROD001'`);
   if (!prod) {
