@@ -114,7 +114,7 @@ public:
         utils.FileWrite("/dev/cpuset/system-background/cpus", Cpuset::system_background);
         utils.FileWrite("/dev/cpuset/restricted/cpus", Cpuset::restricted);
 
-        logger.Info("Cpuset OK");
+        logger.Debug("Cpuset OK");
     }
 
     bool writeSysfs(const char* path, const char* value, int valLen) {

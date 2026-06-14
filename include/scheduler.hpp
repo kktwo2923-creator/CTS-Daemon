@@ -173,7 +173,7 @@ public:
                     }
                 }
             }
-            if (ok) logger.Info("CPU簇: %d 调速器: %s", Policy, Governor.c_str());
+            if (ok) logger.Debug("CPU簇: %d 调速器: %s", Policy, Governor.c_str());
             else    logger.Warn("CPU簇: %d 调速器写入失败: %s (节点不可写或调速器不存在)", Policy, Governor.c_str());
             govOk = ok;
         }
@@ -319,9 +319,9 @@ public:
             }
         }
 
-        logger.Info("场景画像已应用: %s (isGame=%d)",
-                    model.modelName.c_str(),
-                    model.isGame ? 1 : 0);
+        logger.Debug("场景画像已应用: %s (isGame=%d)",
+                     model.modelName.c_str(),
+                     model.isGame ? 1 : 0);
     }
 
     void applyBaseMode() {
