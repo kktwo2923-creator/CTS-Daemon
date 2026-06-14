@@ -82,16 +82,25 @@ async function main() {
     await run(`INSERT INTO api_keys(key_hash, name) VALUES(?,?)`, [sha256(apiKeyPlain), "default"]);
   }
 
-  console.log("✅ 数据库初始化完成");
-  console.log("📋 管理员账号: " + adminUser + " / " + adminPass + "  (请尽快修改)");
-  if (apiKeyPlain) {
-    console.log("🔑 API 密钥(仅显示一次，请保存): " + apiKeyPlain);
-  } else {
-    console.log("🔑 API 密钥已存在(哈希存储)。如忘记可重设环境变量 API_KEY 并清空 api_keys 表重建。");
-  }
+  return { adminUser, adminPass, apiKeyPlain };
 }
 
-main().then(() => process.exit(0)).catch((e) => {
-  console.error("初始化失败:", e);
-  process.exit(1);
-});
+// 幂等初始化，供 serverless(Vercel) 冷启动按需调用
+module.exports = { ensureInit: main };
+
+// 直接 `node init-db.js` 运行时(Docker/CLI)：执行并打印凭据
+if (require.main === module) {
+  main().then(({ adminUser, adminPass, apiKeyPlain }) => {
+    console.log("✅ 数据库初始化完成");
+    console.log("📋 管理员账号: " + adminUser + " / " + adminPass + "  (请尽快修改)");
+    if (apiKeyPlain) {
+      console.log("🔑 API 密钥(仅显示一次，请保存): " + apiKeyPlain);
+    } else {
+      console.log("🔑 API 密钥已存在(哈希存储)。如忘记可重设环境变量 API_KEY 并清空 api_keys 表重建。");
+    }
+    process.exit(0);
+  }).catch((e) => {
+    console.error("初始化失败:", e);
+    process.exit(1);
+  });
+}

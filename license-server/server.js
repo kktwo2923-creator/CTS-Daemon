@@ -6,11 +6,20 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const rateLimit = require("express-rate-limit");
 const { run, get, all } = require("./db");
+const { ensureInit } = require("./init-db");
 
 const app = express();
-app.set("trust proxy", 1); // Koyeb/Render 在反代后，限流取真实 IP
+app.set("trust proxy", 1); // Koyeb/Render/Vercel 在反代后，限流取真实 IP
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
+
+// serverless(Vercel) 没有启动脚本：首个请求时按需建表/补种子(幂等、仅执行一次)
+let _initPromise = null;
+const ready = () => (_initPromise = _initPromise || ensureInit());
+app.use(async (req, res, next) => {
+  try { await ready(); next(); }
+  catch (e) { console.error("init 失败:", e); res.status(500).json({ code: 500, success: false, message: "服务初始化失败" }); }
+});
 
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString("hex");
@@ -237,4 +246,9 @@ app.get("/api/stats", apiLimiter, adminOrApiKey("manage"), async (_req, res) => 
   res.json({ code: 200, success: true, data: { total: total ? total.c : 0, ...map, recent } });
 });
 
-app.listen(PORT, () => console.log(`卡密服务已启动 :${PORT}  DB=${require("./db").DB_URL}`));
+// 直接运行(Docker/本地)时才监听端口；Vercel 以 serverless 方式 require 本模块
+if (require.main === module) {
+  app.listen(PORT, () => console.log(`卡密服务已启动 :${PORT}  DB=${require("./db").DB_URL}`));
+}
+
+module.exports = app;
