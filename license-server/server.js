@@ -113,7 +113,7 @@ app.post("/api/admin/password", apiLimiter, adminOrApiKey("manage"), async (req,
 
 // ---------- 卡密验证(客户端) ----------
 app.post("/api/verify", verifyLimiter, requireApiKey("verify"), async (req, res) => {
-  const { license_key, device_id, device_info } = req.body || {};
+  const { license_key, device_id, device_info, user_note } = req.body || {};
   const ip = req.ip;
   const log = (result) => run(
     `INSERT INTO verify_logs(license_key, device_id, ip, result) VALUES(?,?,?,?)`,
@@ -154,6 +154,11 @@ app.post("/api/verify", verifyLimiter, requireApiKey("verify"), async (req, res)
     return res.json({ code: 410, success: false, message: "卡密已过期" });
   }
 
+  // 用户激活时填写的备注,存库供后台查看(仅在有值时写入,避免重复验证清空)
+  if (user_note && String(user_note).trim()) {
+    await run(`UPDATE license_keys SET user_note=? WHERE id=?`, [String(user_note).trim().slice(0, 200), row.id]);
+  }
+
   await log("成功");
   const prod = await get(`SELECT product_name, version FROM products WHERE product_id=?`, [row.product_id]);
   res.json({
@@ -166,7 +171,6 @@ app.post("/api/verify", verifyLimiter, requireApiKey("verify"), async (req, res)
       activated_at: row.activated_at || nowIso(),
       expires_at: expires_at || null,
       remaining_days: remainingDays(expires_at),
-      note: row.note || "",                                 // 卡密备注,激活时回显给用户
       token: signToken(license_key, boundDev, expires_at), // 守护端离线校验用
     },
   });
@@ -201,7 +205,7 @@ app.get("/api/license/list", apiLimiter, adminOrApiKey("manage"), async (req, re
   let where = ""; const args = [];
   if (status !== undefined && status !== "") { where = "WHERE status=?"; args.push(parseInt(status)); }
   const rows = await all(
-    `SELECT id, license_key, status, duration_days, device_id, device_info, activated_at, expires_at, note, created_at
+    `SELECT id, license_key, status, duration_days, device_id, device_info, activated_at, expires_at, note, user_note, created_at
      FROM license_keys ${where} ORDER BY id DESC LIMIT ? OFFSET ?`, [...args, limit, offset]
   );
   const total = await get(`SELECT COUNT(*) AS c FROM license_keys ${where}`, args);
