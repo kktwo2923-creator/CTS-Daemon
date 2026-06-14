@@ -17,7 +17,7 @@
 
 ## 这是什么
 
-**CoreTurboScheduler(CTS)** 是面向 **骁龙 8 至尊版(8 Elite Gen 5,SM8850)** 的 CPU 调度守护进程:
+**CoreTurboScheduler(CTS)** 是面向Android平台的 CPU 调度守护进程:
 它只设定各模式的频率上下限与 governor 参数,把实际的升降频节奏交给内核 governor(walt / schedutil / hmbird)自己完成 —— 既省电又跟手。
 
 可单独用 `mode.txt` 切换模式;也可搭配图形前端 [CTS 接管助手](https://github.com/kktwo2923-creator/CTS) 按应用画像自动接管。
