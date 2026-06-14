@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>OnePlus V Pro · 卡密管理后台</title>
+<style>
+  :root { --bg:#0f1115; --card:#181b22; --line:#2a2f3a; --fg:#e8eaed; --sub:#9aa3b2; --pri:#3b82f6; --ok:#22c55e; --warn:#f59e0b; --err:#ef4444; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--fg); }
+  a { color:var(--pri); }
+  .wrap { max-width:1100px; margin:0 auto; padding:20px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:18px; margin-bottom:16px; }
+  h1 { font-size:20px; margin:0 0 4px; } h2 { font-size:15px; margin:0 0 12px; color:var(--sub); font-weight:600; }
+  input,select,button,textarea { font:inherit; }
+  input,select,textarea { background:#0e1117; border:1px solid var(--line); color:var(--fg); border-radius:9px; padding:9px 11px; }
+  label { display:block; font-size:12px; color:var(--sub); margin:8px 0 4px; }
+  button { background:var(--pri); color:#fff; border:0; border-radius:9px; padding:9px 14px; cursor:pointer; }
+  button.ghost { background:transparent; border:1px solid var(--line); color:var(--fg); }
+  button.sm { padding:4px 9px; font-size:12px; border-radius:7px; }
+  button.danger { background:var(--err); } button.warn { background:var(--warn); color:#222; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:10px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  td.key { font-family:ui-monospace,Menlo,Consolas,monospace; }
+  .pill { padding:2px 8px; border-radius:20px; font-size:12px; }
+  .s0{background:#334155;color:#cbd5e1} .s1{background:#14532d;color:#bbf7d0} .s2{background:#78350f;color:#fde68a} .s3{background:#7f1d1d;color:#fecaca}
+  .stat { display:grid; grid-template-columns:repeat(5,1fr); gap:10px; }
+  .stat .b { background:#0e1117; border:1px solid var(--line); border-radius:11px; padding:12px; text-align:center; }
+  .stat .n { font-size:22px; font-weight:700; } .stat .t { font-size:12px; color:var(--sub); }
+  .muted { color:var(--sub); font-size:12px; }
+  .gen-out { font-family:ui-monospace,monospace; font-size:12px; white-space:pre-wrap; background:#0e1117; border:1px solid var(--line); border-radius:9px; padding:10px; max-height:200px; overflow:auto; }
+  .hide { display:none; }
+  .toast { position:fixed; bottom:18px; left:50%; transform:translateX(-50%); background:#111827; border:1px solid var(--line); padding:10px 16px; border-radius:10px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <!-- 登录 -->
+  <div id="login" class="card" style="max-width:380px;margin:60px auto;">
+    <h1>卡密管理后台</h1>
+    <div class="muted">OnePlus V Pro 授权系统</div>
+    <label>用户名</label><input id="lg-user" value="admin" style="width:100%" />
+    <label>密码</label><input id="lg-pass" type="password" placeholder="admin123" style="width:100%" />
+    <div style="margin-top:14px"><button onclick="login()" style="width:100%">登录</button></div>
+    <div id="lg-err" class="muted" style="color:var(--err);margin-top:8px"></div>
+  </div>
+
+  <!-- 主体 -->
+  <div id="app" class="hide">
+    <div class="row" style="justify-content:space-between">
+      <h1>卡密管理后台</h1>
+      <div class="row">
+        <button class="ghost sm" onclick="loadStats();loadList()">刷新</button>
+        <button class="ghost sm" onclick="logout()">退出</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>概览</h2>
+      <div class="stat" id="stat"></div>
+    </div>
+
+    <div class="card">
+      <h2>生成卡密</h2>
+      <div class="grid">
+        <div><label>数量</label><input id="g-count" type="number" value="10" style="width:100%"/></div>
+        <div><label>有效天数(0=永久)</label><input id="g-days" type="number" value="30" style="width:100%"/></div>
+        <div><label>前缀</label><input id="g-prefix" value="KEY" style="width:100%"/></div>
+        <div><label>产品ID</label><input id="g-prod" value="PROD001" style="width:100%"/></div>
+        <div><label>备注</label><input id="g-note" placeholder="可选" style="width:100%"/></div>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button onclick="generate()">生成</button>
+        <button class="ghost" onclick="copyGen()">复制全部</button>
+      </div>
+      <div id="gen-out" class="gen-out hide" style="margin-top:10px"></div>
+    </div>
+
+    <div class="card">
+      <h2>卡密列表</h2>
+      <div class="row" style="margin-bottom:10px">
+        <select id="f-status" onchange="page=1;loadList()">
+          <option value="">全部状态</option>
+          <option value="0">未使用</option><option value="1">已激活</option>
+          <option value="2">已过期</option><option value="3">已禁用</option>
+        </select>
+        <button class="ghost sm" onclick="page=Math.max(1,page-1);loadList()">上一页</button>
+        <span id="pageinfo" class="muted"></span>
+        <button class="ghost sm" onclick="page++;loadList()">下一页</button>
+      </div>
+      <div style="overflow:auto">
+        <table id="tbl"><thead><tr>
+          <th>卡密</th><th>状态</th><th>天数</th><th>设备</th><th>到期</th><th>备注</th><th>操作</th>
+        </tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="toast" class="toast hide"></div>
+
+<script>
+const API = location.origin;
+let token = localStorage.getItem("cts_jwt") || "";
+let page = 1, lastGen = [];
+
+function toast(m){ const t=document.getElementById("toast"); t.textContent=m; t.classList.remove("hide"); setTimeout(()=>t.classList.add("hide"),1800); }
+function authHeaders(){ return { "Content-Type":"application/json", "Authorization":"Bearer "+token }; }
+async function api(path, opts={}){ const r = await fetch(API+path, opts); return r.json(); }
+
+async function login(){
+  const username=document.getElementById("lg-user").value.trim();
+  const password=document.getElementById("lg-pass").value;
+  const j = await api("/api/admin/login", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username,password})});
+  if(j.success){ token=j.token; localStorage.setItem("cts_jwt",token); showApp(); }
+  else document.getElementById("lg-err").textContent=j.message||"登录失败";
+}
+function logout(){ token=""; localStorage.removeItem("cts_jwt"); document.getElementById("app").classList.add("hide"); document.getElementById("login").classList.remove("hide"); }
+function showApp(){ document.getElementById("login").classList.add("hide"); document.getElementById("app").classList.remove("hide"); loadStats(); loadList(); }
+
+async function loadStats(){
+  const j = await api("/api/stats",{headers:authHeaders()});
+  if(!j.success){ if(j.code===401) logout(); return; }
+  const d=j.data;
+  document.getElementById("stat").innerHTML =
+    [["总数",d.total],["未使用",d.unused],["已激活",d.active],["已过期",d.expired],["已禁用",d.disabled]]
+    .map(([t,n])=>`<div class="b"><div class="n">${n}</div><div class="t">${t}</div></div>`).join("");
+}
+
+const STATUS=["未使用","已激活","已过期","已禁用"];
+async function loadList(){
+  const status=document.getElementById("f-status").value;
+  const j = await api(`/api/license/list?status=${status}&page=${page}&limit=50`,{headers:authHeaders()});
+  if(!j.success){ if(j.code===401) logout(); return; }
+  const tb=document.querySelector("#tbl tbody"); tb.innerHTML="";
+  for(const r of j.data.list){
+    const exp = r.expires_at ? r.expires_at.slice(0,10) : (r.duration_days==0?"永久":"-");
+    tb.innerHTML += `<tr>
+      <td class="key">${r.license_key} <button class="sm ghost" onclick="copy('${r.license_key}')">复制</button></td>
+      <td><span class="pill s${r.status}">${STATUS[r.status]||r.status}</span></td>
+      <td>${r.duration_days==0?"永久":r.duration_days}</td>
+      <td class="muted">${r.device_id?(""+r.device_id).slice(0,16):"-"}</td>
+      <td>${exp}</td><td class="muted">${r.note||""}</td>
+      <td>
+        ${r.status==3?`<button class="sm" onclick="act('enable','${r.license_key}')">启用</button>`:`<button class="sm danger" onclick="act('disable','${r.license_key}')">禁用</button>`}
+        <button class="sm warn" onclick="act('unbind','${r.license_key}')">解绑</button>
+        <button class="sm ghost" onclick="if(confirm('删除?'))act('delete','${r.license_key}')">删</button>
+      </td></tr>`;
+  }
+  const tot=j.data.total; document.getElementById("pageinfo").textContent=`第 ${page} 页 / 共 ${tot} 条`;
+}
+async function act(action, key){
+  const j = await api(`/api/license/${action}`,{method:"POST",headers:authHeaders(),body:JSON.stringify({license_key:key})});
+  toast(j.message||"完成"); loadStats(); loadList();
+}
+async function generate(){
+  const body={ count:+document.getElementById("g-count").value, duration_days:+document.getElementById("g-days").value,
+    prefix:document.getElementById("g-prefix").value, product_id:document.getElementById("g-prod").value, note:document.getElementById("g-note").value };
+  const j = await api("/api/license/generate",{method:"POST",headers:authHeaders(),body:JSON.stringify(body)});
+  if(!j.success){ toast(j.message||"失败"); return; }
+  lastGen=j.data.keys;
+  const out=document.getElementById("gen-out"); out.classList.remove("hide"); out.textContent=lastGen.join("\n");
+  toast(`已生成 ${lastGen.length} 个`); loadStats(); loadList();
+}
+function copy(t){ navigator.clipboard.writeText(t).then(()=>toast("已复制")); }
+function copyGen(){ if(lastGen.length) copy(lastGen.join("\n")); }
+
+// 自动登录
+if(token) showApp();
+</script>
+</body>
+</html>

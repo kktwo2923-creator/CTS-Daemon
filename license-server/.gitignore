@@ -1,0 +1,5 @@
+node_modules/
+local.db
+local.db-*
+*.log
+.env

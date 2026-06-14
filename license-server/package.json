@@ -1,0 +1,18 @@
+{
+  "name": "cts-license-server",
+  "version": "1.0.0",
+  "description": "OnePlus V Pro 卡密授权系统 — 设备绑定(ro.serialno)、随机卡密生成与验证、网页管理后台",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "init-db": "node init-db.js"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "@libsql/client": "^0.14.0",
+    "bcryptjs": "^2.4.3",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.4.1",
+    "jsonwebtoken": "^9.0.2"
+  }
+}
