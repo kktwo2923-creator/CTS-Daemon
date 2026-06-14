@@ -278,10 +278,90 @@ function baseUrl(req) {
 }
 const newOutTradeNo = () => "CTS" + Date.now() + crypto.randomBytes(2).toString("hex").toUpperCase();
 
+// ================= 支付宝官方(电脑网站支付, RSA2) =================
+// 把环境变量里的裸 base64 密钥补成 PEM(已是 PEM 则原样)
+function pemWrap(raw, label) {
+  if (!raw) return "";
+  raw = raw.trim().replace(/\\n/g, "\n");
+  if (raw.includes("BEGIN")) return raw;
+  const body = (raw.match(/.{1,64}/g) || []).join("\n");
+  return `-----BEGIN ${label}-----\n${body}\n-----END ${label}-----`;
+}
+const ALIPAY = {
+  gateway: process.env.ALIPAY_GATEWAY || "https://openapi.alipay.com/gateway.do",
+  appId: process.env.ALIPAY_APP_ID || "",
+  privateKey: pemWrap(process.env.ALIPAY_PRIVATE_KEY || "", "PRIVATE KEY"), // 应用私钥(PKCS8)
+  publicKey: pemWrap(process.env.ALIPAY_PUBLIC_KEY || "", "PUBLIC KEY"),    // 支付宝公钥
+};
+const alipayReady = () => !!(ALIPAY.appId && ALIPAY.privateKey && ALIPAY.publicKey);
+
+// 待签名串：键名升序，k=v&…(去掉 sign/空值)。验签时还需排除 sign_type。
+function alipayBuildStr(params, exclude) {
+  return Object.keys(params)
+    .filter((k) => !exclude.includes(k) && params[k] !== "" && params[k] != null)
+    .sort()
+    .map((k) => `${k}=${params[k]}`)
+    .join("&");
+}
+function alipaySign(params) {
+  return crypto.createSign("RSA-SHA256").update(alipayBuildStr(params, ["sign"]), "utf8").sign(ALIPAY.privateKey, "base64");
+}
+function alipayVerify(params) {
+  try {
+    return crypto.createVerify("RSA-SHA256")
+      .update(alipayBuildStr(params, ["sign", "sign_type"]), "utf8")
+      .verify(ALIPAY.publicKey, String(params.sign || ""), "base64");
+  } catch (_) { return false; }
+}
+// 支付宝要求 GMT+8 时间戳 yyyy-MM-dd HH:mm:ss(Vercel 运行在 UTC)
+const chinaTime = () => new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 19).replace("T", " ");
+
+// 发起支付宝支付：建订单 + 返回收银台跳转地址
+app.post("/api/pay/alipay/create", apiLimiter, async (req, res) => {
+  if (!alipayReady()) return res.json({ code: 503, success: false, message: "支付宝未配置" });
+  const plan = await get(`SELECT * FROM plans WHERE code=? AND enabled=1`, [(req.body || {}).plan_code || ""]);
+  if (!plan) return res.json({ code: 404, success: false, message: "套餐不存在" });
+  const out_trade_no = newOutTradeNo();
+  const amount = Number(plan.price).toFixed(2);
+  await run(`INSERT INTO orders(out_trade_no, plan_code, days, money, pay_type, status) VALUES(?,?,?,?, 'alipay', 0)`,
+    [out_trade_no, plan.code, plan.days, amount]);
+  const params = {
+    app_id: ALIPAY.appId, method: "alipay.trade.page.pay", format: "JSON", charset: "utf-8",
+    sign_type: "RSA2", timestamp: chinaTime(), version: "1.0",
+    notify_url: `${baseUrl(req)}/api/pay/alipay/notify`, return_url: `${baseUrl(req)}/buy.html`,
+    biz_content: JSON.stringify({ out_trade_no, total_amount: amount, subject: plan.name, product_code: "FAST_INSTANT_TRADE_PAY" }),
+  };
+  params.sign = alipaySign(params);
+  const qs = Object.keys(params).map((k) => `${encodeURIComponent(k)}=${encodeURIComponent(params[k])}`).join("&");
+  res.json({ code: 200, success: true, data: { out_trade_no, pay_url: `${ALIPAY.gateway}?${qs}` } });
+});
+
+// 支付宝异步回调：验签 → 出卡。必须返回纯文本 success
+async function alipayNotify(req, res) {
+  const p = req.method === "POST" ? req.body : req.query;
+  if (!alipayReady() || !alipayVerify(p)) return res.send("fail");
+  if (String(p.app_id) !== String(ALIPAY.appId)) return res.send("fail");
+  if (p.trade_status !== "TRADE_SUCCESS" && p.trade_status !== "TRADE_FINISHED") return res.send("success");
+  const order = await get(`SELECT * FROM orders WHERE out_trade_no=?`, [p.out_trade_no || ""]);
+  if (!order) return res.send("fail");
+  if (order.money && p.total_amount && Number(p.total_amount) + 1e-6 < Number(order.money)) return res.send("fail");
+  if (order.status === 0) {
+    const planRow = await get(`SELECT prefix FROM plans WHERE code=?`, [order.plan_code]);
+    const key = genKey((planRow && planRow.prefix) || "VPRO");
+    await run(`INSERT INTO license_keys(license_key, product_id, status, duration_days, note) VALUES(?, 'PROD001', 0, ?, ?)`,
+      [key, order.days, "支付宝发卡 " + order.out_trade_no]);
+    await run(`UPDATE orders SET status=1, trade_no=?, license_key=?, paid_at=? WHERE id=?`,
+      [p.trade_no || "", key, nowIso(), order.id]);
+  }
+  res.send("success");
+}
+app.get("/api/pay/alipay/notify", alipayNotify);
+app.post("/api/pay/alipay/notify", alipayNotify);
+
 // 上架套餐(公开，购买页用)
 app.get("/api/plans", apiLimiter, async (_req, res) => {
   const rows = await all(`SELECT code,name,days,price FROM plans WHERE enabled=1 ORDER BY sort,days`);
-  res.json({ code: 200, success: true, data: { plans: rows, pay_enabled: epayReady() } });
+  res.json({ code: 200, success: true, data: { plans: rows, pay_enabled: epayReady(), alipay_enabled: alipayReady() } });
 });
 
 // 套餐管理(后台)

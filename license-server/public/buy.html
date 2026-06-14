@@ -49,6 +49,13 @@
     <div id="plans" class="plans"><div class="muted">加载中…</div></div>
   </div>
 
+  <div class="card" id="alipayCard" style="display:none">
+    <h2>② 支付宝自动支付(推荐,秒发卡)</h2>
+    <div class="muted" style="margin-bottom:10px">点下方按钮跳转支付宝付款,付完自动跳回并显示卡密,无需填单号、无需等待。</div>
+    <button onclick="alipayPay()">支付宝付款</button>
+    <div id="aerr" class="muted err"></div>
+  </div>
+
   <div class="card">
     <h2>② 扫码付款(按所选套餐金额)</h2>
     <div class="pay">
@@ -100,9 +107,19 @@ async function loadPlans(){
       <div class="nm">${p.name}</div><div class="pr">¥${p.price}</div>
       <div class="muted">${p.days==0?'永久':p.days+' 天'}</div></div>`).join("");
     selPlan = plans[0];
+    if(j.data && j.data.alipay_enabled){ document.getElementById("alipayCard").style.display="block"; }
   }catch(e){ document.getElementById("plans").innerHTML='<div class="muted err">加载失败</div>'; }
 }
 function selPlanIdx(i){ selPlan=plans[i]; document.querySelectorAll(".plan").forEach(p=>p.classList.toggle("sel",+p.dataset.i===i)); }
+
+async function alipayPay(){
+  document.getElementById("aerr").textContent="";
+  if(!selPlan){ document.getElementById("aerr").textContent="请先选套餐"; return; }
+  const j = await (await fetch(API+"/api/pay/alipay/create",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({plan_code:selPlan.code})})).json();
+  if(j.success && j.data.pay_url){ location.href=j.data.pay_url; }
+  else document.getElementById("aerr").textContent=j.message||"发起支付失败";
+}
 
 async function submitOrder(){
   document.getElementById("suberr").textContent=""; document.getElementById("subok").textContent="";
