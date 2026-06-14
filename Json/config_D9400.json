@@ -84,14 +84,14 @@
       "gov_c0": {
         "governor": "sugov_ext",
         "params": {
-          "up_rate_limit_us": "1000",
+          "up_rate_limit_us": "500",
           "down_rate_limit_us": "0"
         }
       },
       "gov_c1": {
         "governor": "sugov_ext",
         "params": {
-          "up_rate_limit_us": "1000",
+          "up_rate_limit_us": "500",
           "down_rate_limit_us": "0"
         }
       },
@@ -100,7 +100,7 @@
       "gov_c2": {
         "governor": "sugov_ext",
         "params": {
-          "up_rate_limit_us": "1000",
+          "up_rate_limit_us": "500",
           "down_rate_limit_us": "0"
         }
       }
@@ -395,14 +395,14 @@
       "gov_c0": {
         "governor": "sugov_ext",
         "params": {
-          "up_rate_limit_us": "1000",
+          "up_rate_limit_us": "500",
           "down_rate_limit_us": "0"
         }
       },
       "gov_c1": {
         "governor": "sugov_ext",
         "params": {
-          "up_rate_limit_us": "1000",
+          "up_rate_limit_us": "500",
           "down_rate_limit_us": "0"
         }
       },
@@ -411,7 +411,7 @@
       "gov_c2": {
         "governor": "sugov_ext",
         "params": {
-          "up_rate_limit_us": "1000",
+          "up_rate_limit_us": "500",
           "down_rate_limit_us": "0"
         }
       }
@@ -457,14 +457,14 @@
       "gov_c0": {
         "governor": "sugov_ext",
         "params": {
-          "up_rate_limit_us": "1000",
+          "up_rate_limit_us": "500",
           "down_rate_limit_us": "0"
         }
       },
       "gov_c1": {
         "governor": "sugov_ext",
         "params": {
-          "up_rate_limit_us": "1000",
+          "up_rate_limit_us": "500",
           "down_rate_limit_us": "0"
         }
       },
@@ -473,7 +473,7 @@
       "gov_c2": {
         "governor": "sugov_ext",
         "params": {
-          "up_rate_limit_us": "1000",
+          "up_rate_limit_us": "500",
           "down_rate_limit_us": "0"
         }
       }
@@ -515,14 +515,14 @@
       "gov_c0": {
         "governor": "sugov_ext",
         "params": {
-          "up_rate_limit_us": "1000",
+          "up_rate_limit_us": "500",
           "down_rate_limit_us": "0"
         }
       },
       "gov_c1": {
         "governor": "sugov_ext",
         "params": {
-          "up_rate_limit_us": "1000",
+          "up_rate_limit_us": "500",
           "down_rate_limit_us": "0"
         }
       },
@@ -531,7 +531,7 @@
       "gov_c2": {
         "governor": "sugov_ext",
         "params": {
-          "up_rate_limit_us": "1000",
+          "up_rate_limit_us": "500",
           "down_rate_limit_us": "0"
         }
       }
@@ -576,14 +576,14 @@
       "gov_c0": {
         "governor": "sugov_ext",
         "params": {
-          "up_rate_limit_us": "1000",
+          "up_rate_limit_us": "500",
           "down_rate_limit_us": "0"
         }
       },
       "gov_c1": {
         "governor": "sugov_ext",
         "params": {
-          "up_rate_limit_us": "1000",
+          "up_rate_limit_us": "500",
           "down_rate_limit_us": "0"
         }
       },
@@ -592,7 +592,7 @@
       "gov_c2": {
         "governor": "sugov_ext",
         "params": {
-          "up_rate_limit_us": "1000",
+          "up_rate_limit_us": "500",
           "down_rate_limit_us": "0"
         }
       }

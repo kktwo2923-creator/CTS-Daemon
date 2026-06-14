@@ -26,7 +26,6 @@ async function main() {
     activated_at  TEXT,
     expires_at    TEXT,
     note          TEXT,
-    user_note     TEXT,                       -- 用户激活时填写的备注,供后台查看
     created_at    TEXT DEFAULT (datetime('now'))
   )`);
 
@@ -88,7 +87,6 @@ async function main() {
   await run(`CREATE INDEX IF NOT EXISTS idx_ord_status ON orders(status)`);
   try { await run(`ALTER TABLE orders ADD COLUMN contact TEXT`); } catch (_) { /* 旧库补列，已存在则忽略 */ }
   try { await run(`ALTER TABLE orders ADD COLUMN note TEXT`); } catch (_) { /* 旧库补列，已存在则忽略 */ }
-  try { await run(`ALTER TABLE license_keys ADD COLUMN user_note TEXT`); } catch (_) { /* 旧库补列，已存在则忽略 */ }
 
   // 默认产品
   const prod = await get(`SELECT product_id FROM products WHERE product_id='PROD001'`);

@@ -119,7 +119,7 @@
       </div>
       <div style="overflow:auto">
         <table id="tbl"><thead><tr>
-          <th>卡密</th><th>状态</th><th>天数</th><th>设备</th><th>到期</th><th>备注</th><th>激活备注</th><th>操作</th>
+          <th>卡密</th><th>状态</th><th>天数</th><th>设备</th><th>到期</th><th>备注</th><th>操作</th>
         </tr></thead><tbody></tbody></table>
       </div>
     </div>
@@ -168,7 +168,7 @@ async function loadList(){
       <td><span class="pill s${r.status}">${STATUS[r.status]||r.status}</span></td>
       <td>${r.duration_days==0?"永久":r.duration_days}</td>
       <td class="muted">${r.device_id?(""+r.device_id).slice(0,16):"-"}</td>
-      <td>${exp}</td><td class="muted">${r.note||""}</td><td class="muted">${r.user_note||""}</td>
+      <td>${exp}</td><td class="muted">${r.note||""}</td>
       <td>
         ${r.status==3?`<button class="sm" onclick="act('enable','${r.license_key}')">启用</button>`:`<button class="sm danger" onclick="act('disable','${r.license_key}')">禁用</button>`}
         <button class="sm warn" onclick="act('unbind','${r.license_key}')">解绑</button>

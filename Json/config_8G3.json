@@ -88,28 +88,28 @@
       "gov_c0": {
         "governor": "walt",
         "params": {
-          "up_rate_limit_us": "1000",
+          "up_rate_limit_us": "500",
           "down_rate_limit_us": "0"
         }
       },
       "gov_c1": {
         "governor": "walt",
         "params": {
-          "up_rate_limit_us": "1000",
+          "up_rate_limit_us": "500",
           "down_rate_limit_us": "0"
         }
       },
       "gov_c2": {
         "governor": "walt",
         "params": {
-          "up_rate_limit_us": "1000",
+          "up_rate_limit_us": "500",
           "down_rate_limit_us": "0"
         }
       },
       "gov_c3": {
         "governor": "walt",
         "params": {
-          "up_rate_limit_us": "1000",
+          "up_rate_limit_us": "500",
           "down_rate_limit_us": "0"
         }
       }
@@ -329,28 +329,28 @@
       "gov_c0": {
         "governor": "walt",
         "params": {
-          "up_rate_limit_us": "1000",
+          "up_rate_limit_us": "500",
           "down_rate_limit_us": "0"
         }
       },
       "gov_c1": {
         "governor": "walt",
         "params": {
-          "up_rate_limit_us": "1000",
+          "up_rate_limit_us": "500",
           "down_rate_limit_us": "0"
         }
       },
       "gov_c2": {
         "governor": "walt",
         "params": {
-          "up_rate_limit_us": "1000",
+          "up_rate_limit_us": "500",
           "down_rate_limit_us": "0"
         }
       },
       "gov_c3": {
         "governor": "walt",
         "params": {
-          "up_rate_limit_us": "1000",
+          "up_rate_limit_us": "500",
           "down_rate_limit_us": "0"
         }
       }
@@ -377,28 +377,28 @@
       "gov_c0": {
         "governor": "walt",
         "params": {
-          "up_rate_limit_us": "1000",
+          "up_rate_limit_us": "500",
           "down_rate_limit_us": "0"
         }
       },
       "gov_c1": {
         "governor": "walt",
         "params": {
-          "up_rate_limit_us": "1000",
+          "up_rate_limit_us": "500",
           "down_rate_limit_us": "0"
         }
       },
       "gov_c2": {
         "governor": "walt",
         "params": {
-          "up_rate_limit_us": "1000",
+          "up_rate_limit_us": "500",
           "down_rate_limit_us": "0"
         }
       },
       "gov_c3": {
         "governor": "walt",
         "params": {
-          "up_rate_limit_us": "1000",
+          "up_rate_limit_us": "500",
           "down_rate_limit_us": "0"
         }
       }
@@ -425,28 +425,28 @@
       "gov_c0": {
         "governor": "walt",
         "params": {
-          "up_rate_limit_us": "1000",
+          "up_rate_limit_us": "500",
           "down_rate_limit_us": "0"
         }
       },
       "gov_c1": {
         "governor": "walt",
         "params": {
-          "up_rate_limit_us": "1000",
+          "up_rate_limit_us": "500",
           "down_rate_limit_us": "0"
         }
       },
       "gov_c2": {
         "governor": "walt",
         "params": {
-          "up_rate_limit_us": "1000",
+          "up_rate_limit_us": "500",
           "down_rate_limit_us": "0"
         }
       },
       "gov_c3": {
         "governor": "walt",
         "params": {
-          "up_rate_limit_us": "1000",
+          "up_rate_limit_us": "500",
           "down_rate_limit_us": "0"
         }
       }
@@ -475,28 +475,28 @@
       "gov_c0": {
         "governor": "walt",
         "params": {
-          "up_rate_limit_us": "1000",
+          "up_rate_limit_us": "500",
           "down_rate_limit_us": "0"
         }
       },
       "gov_c1": {
         "governor": "walt",
         "params": {
-          "up_rate_limit_us": "1000",
+          "up_rate_limit_us": "500",
           "down_rate_limit_us": "0"
         }
       },
       "gov_c2": {
         "governor": "walt",
         "params": {
-          "up_rate_limit_us": "1000",
+          "up_rate_limit_us": "500",
           "down_rate_limit_us": "0"
         }
       },
       "gov_c3": {
         "governor": "walt",
         "params": {
-          "up_rate_limit_us": "1000",
+          "up_rate_limit_us": "500",
           "down_rate_limit_us": "0"
         }
       }
