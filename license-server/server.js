@@ -433,7 +433,7 @@ app.post("/api/pay/notify", handleNotify);
 
 // 买家提交订单(半手动收款码模式)：扫码付款后填付款单号 → 建待确认订单
 app.post("/api/order/submit", verifyLimiter, async (req, res) => {
-  let { plan_code, pay_type, order_no, contact } = req.body || {};
+  let { plan_code, pay_type, order_no, contact, note } = req.body || {};
   order_no = String(order_no || "").trim();
   pay_type = pay_type === "wxpay" ? "wxpay" : "alipay";
   if (!order_no) return res.json({ code: 400, success: false, message: "请填写你的付款单号" });
@@ -445,8 +445,8 @@ app.post("/api/order/submit", verifyLimiter, async (req, res) => {
       return res.json({ code: 200, success: true, message: "该订单已发卡", data: { license_key: exist.license_key } });
     return res.json({ code: 200, success: true, message: "已提交，等待卖家确认到账后即可用此单号取卡" });
   }
-  await run(`INSERT INTO orders(out_trade_no, plan_code, days, money, pay_type, status, contact) VALUES(?,?,?,?,?,0,?)`,
-    [order_no, plan.code, plan.days, String(plan.price), pay_type, String(contact || "").slice(0, 60)]);
+  await run(`INSERT INTO orders(out_trade_no, plan_code, days, money, pay_type, status, contact, note) VALUES(?,?,?,?,?,0,?,?)`,
+    [order_no, plan.code, plan.days, String(plan.price), pay_type, String(contact || "").slice(0, 60), String(note || "").slice(0, 200)]);
   res.json({ code: 200, success: true, message: "已提交！卖家确认到账后，用此单号点“查询取卡”即可拿到卡密" });
 });
 
@@ -499,7 +499,7 @@ app.post("/api/order/query", verifyLimiter, async (req, res) => {
 app.get("/api/order/list", apiLimiter, adminOrApiKey("manage"), async (req, res) => {
   const page = Math.max(parseInt(req.query.page) || 1, 1);
   const limit = Math.min(Math.max(parseInt(req.query.limit) || 50, 1), 500);
-  const rows = await all(`SELECT out_trade_no, plan_code, days, money, pay_type, status, license_key, contact, created_at, paid_at
+  const rows = await all(`SELECT out_trade_no, plan_code, days, money, pay_type, status, license_key, contact, note, created_at, paid_at
     FROM orders ORDER BY id DESC LIMIT ? OFFSET ?`, [limit, (page - 1) * limit]);
   const total = await get(`SELECT COUNT(*) AS c FROM orders`);
   const paid = await get(`SELECT COUNT(*) AS c FROM orders WHERE status=1`);

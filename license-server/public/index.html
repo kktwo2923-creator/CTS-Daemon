@@ -98,7 +98,7 @@
       <div class="stat" id="ostat" style="grid-template-columns:repeat(2,1fr);max-width:320px"></div>
       <div style="overflow:auto;margin-top:10px">
         <table id="otbl"><thead><tr>
-          <th>付款单号</th><th>套餐</th><th>金额</th><th>方式</th><th>联系</th><th>状态</th><th>卡密</th><th>时间</th><th>操作</th>
+          <th>付款单号</th><th>套餐</th><th>金额</th><th>方式</th><th>联系</th><th>备注</th><th>状态</th><th>卡密</th><th>时间</th><th>操作</th>
         </tr></thead><tbody></tbody></table>
       </div>
     </div>
@@ -246,6 +246,7 @@ async function loadOrders(){
     tb.innerHTML += `<tr><td class="key">${o.out_trade_no}</td><td>${o.plan_code||''}(${o.days==0?'永久':o.days+'天'})</td>
       <td>¥${o.money||''}</td><td>${o.pay_type==='wxpay'?'微信':'支付宝'}</td>
       <td class="muted">${o.contact||'-'}</td>
+      <td class="muted">${o.note||'-'}</td>
       <td><span class="pill ${o.status==1?'s1':'s0'}">${o.status==1?'已发卡':'待确认'}</span></td>
       <td class="key">${o.license_key?o.license_key+` <button class="sm ghost" onclick="copy('${o.license_key}')">复制</button>`:'-'}</td>
       <td class="muted">${(o.paid_at||o.created_at||'').slice(0,16)}</td>

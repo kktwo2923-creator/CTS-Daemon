@@ -81,11 +81,13 @@ async function main() {
     status       INTEGER DEFAULT 0,          -- 0待支付/待确认 1已支付已发卡
     license_key  TEXT,                       -- 发出的卡密
     contact      TEXT,                        -- 买家联系方式(半手动模式)
+    note         TEXT,                        -- 买家提交订单时填写的备注,供后台查看
     created_at    TEXT DEFAULT (datetime('now')),
     paid_at      TEXT
   )`);
   await run(`CREATE INDEX IF NOT EXISTS idx_ord_status ON orders(status)`);
   try { await run(`ALTER TABLE orders ADD COLUMN contact TEXT`); } catch (_) { /* 旧库补列，已存在则忽略 */ }
+  try { await run(`ALTER TABLE orders ADD COLUMN note TEXT`); } catch (_) { /* 旧库补列，已存在则忽略 */ }
   try { await run(`ALTER TABLE license_keys ADD COLUMN user_note TEXT`); } catch (_) { /* 旧库补列，已存在则忽略 */ }
 
   // 默认产品

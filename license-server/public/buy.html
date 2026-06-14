@@ -71,6 +71,8 @@
     <input id="otn" placeholder="把你付款的订单号粘到这里" />
     <label>联系方式(选填,方便卖家联系)</label>
     <input id="contact" placeholder="QQ / 微信 / 邮箱,选填" />
+    <label>备注(选填)</label>
+    <input id="onote" placeholder="给卖家的备注,选填" />
     <button onclick="submitOrder()">提交订单</button>
     <div id="suberr" class="muted err"></div>
     <div id="subok" class="info"></div>
@@ -123,7 +125,7 @@ async function submitOrder(){
   const order_no=document.getElementById("otn").value.trim();
   if(!order_no){ document.getElementById("suberr").textContent="请填付款单号"; return; }
   const j = await (await fetch(API+"/api/order/submit",{method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({plan_code:selPlan.code,pay_type:payType,order_no,contact:document.getElementById("contact").value.trim()})})).json();
+    body:JSON.stringify({plan_code:selPlan.code,pay_type:payType,order_no,contact:document.getElementById("contact").value.trim(),note:document.getElementById("onote").value.trim()})})).json();
   if(j.success && j.data && j.data.license_key){ showKey(j.data.license_key); }
   else if(j.success){ document.getElementById("subok").textContent=j.message; document.getElementById("qotn").value=order_no; }
   else document.getElementById("suberr").textContent=j.message||"提交失败";
