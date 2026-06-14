@@ -217,6 +217,19 @@ async function loadBillStat(){
   }
 }
 
+// 后端存的是 UTC,这里统一转中国时间(UTC+8)显示,不随浏览器时区变化
+function cn(s, mode){
+  if(!s) return "";
+  let t = String(s).trim().replace(" ", "T");
+  if(!/[Zz]|[+-]\d\d:?\d\d$/.test(t)) t += "Z";   // 无时区后缀按 UTC
+  const d = new Date(t);
+  if(isNaN(d)) return String(s).slice(0, mode==="date"?10:16);
+  const z = new Date(d.getTime() + 8*3600000);
+  const p = n => String(n).padStart(2,"0");
+  const Y=z.getUTCFullYear(), M=p(z.getUTCMonth()+1), D=p(z.getUTCDate()), h=p(z.getUTCHours()), m=p(z.getUTCMinutes());
+  return mode==="date" ? `${Y}-${M}-${D}` : `${Y}-${M}-${D} ${h}:${m}`;
+}
+
 async function loadStats(){
   const j = await api("/api/stats",{headers:authHeaders()});
   if(!j.success){ if(j.code===401) logout(); return; }
@@ -234,7 +247,7 @@ async function loadList(){
   if(!j.success){ if(j.code===401) logout(); return; }
   const tb=document.querySelector("#tbl tbody"); tb.innerHTML="";
   for(const r of j.data.list){
-    const exp = r.expires_at ? r.expires_at.slice(0,10) : (r.duration_days==0?"永久":"-");
+    const exp = r.expires_at ? cn(r.expires_at,"date") : (r.duration_days==0?"永久":"-");
     tb.innerHTML += `<tr>
       <td class="key">${r.license_key} <button class="sm ghost" onclick="copy('${r.license_key}')">复制</button></td>
       <td><span class="pill s${r.status}">${STATUS[r.status]||r.status}</span></td>
@@ -329,7 +342,7 @@ async function loadOrders(){
       <td class="muted">${o.note||'-'}</td>
       <td><span class="pill ${o.status==1?'s1':'s0'}">${o.status==1?'已发卡':'待确认'}</span></td>
       <td class="key">${o.license_key?o.license_key+` <button class="sm ghost" onclick="copy('${o.license_key}')">复制</button>`:'-'}</td>
-      <td class="muted">${(o.paid_at||o.created_at||'').slice(0,16)}</td>
+      <td class="muted">${cn(o.paid_at||o.created_at)}</td>
       <td>${o.status==1?'':`<button class="sm" onclick="confirmOrder('${ono}')">确认发卡</button>`}
           <button class="sm ghost" onclick="if(confirm('删除该订单?'))delOrder('${ono}')">删</button></td></tr>`;
   }
