@@ -99,7 +99,10 @@
     <div class="card">
       <div class="row" style="justify-content:space-between">
         <h2>订单 / 确认到账发卡</h2>
-        <button class="sm" onclick="confirmAll()">一键通过全部待确认</button>
+        <div class="row">
+          <button class="sm" onclick="reconcile()">用账单核验待确认</button>
+          <button class="sm" onclick="confirmAll()">一键通过全部待确认</button>
+        </div>
       </div>
       <div class="muted" style="margin-bottom:8px">买家付款后在购买页填单号提交,这里出现「待确认」。核对到账后点「确认发卡」或「一键通过」,买家即可用单号取卡。</div>
       <div class="stat" id="ostat" style="grid-template-columns:repeat(2,1fr);max-width:320px"></div>
@@ -351,6 +354,17 @@ async function confirmAll(){
   if(!confirm("把所有【待确认】订单一次性通过并发卡?")) return;
   const j=await api("/api/order/confirm-all",{method:"POST",headers:authHeaders(),body:"{}"});
   toast(j.message||"已通过"); loadOrders(); loadStats(); loadList();
+}
+async function reconcile(){
+  const pv=await api("/api/order/reconcile",{method:"POST",headers:authHeaders(),body:JSON.stringify({preview:true})});
+  if(!pv.success){ toast(pv.message||"失败"); return; }
+  const d=pv.data;
+  if(d.matched===0){ alert(`待确认订单 ${d.pending} 笔,没有与账单对上的。\n可能:账单未导入最新 / 买家填的单号与账单「交易单号」不一致。`); return; }
+  const sample=(d.list||[]).slice(0,12).map(m=>`${m.out_trade_no}  ¥${m.paid}`).join("\n");
+  if(!confirm(`待确认 ${d.pending} 笔,其中 ${d.matched} 笔与账单匹配:\n\n${sample}${d.matched>12?"\n…":""}\n\n确认给这些订单自动发卡?`)) return;
+  const j=await api("/api/order/reconcile",{method:"POST",headers:authHeaders(),body:JSON.stringify({})});
+  if(j.success){ toast(`已核验发卡 ${j.data.issued} 笔`); loadOrders(); loadStats(); loadList(); loadBillStat(); }
+  else toast(j.message||"失败");
 }
 async function confirmOrder(ono){
   const j=await api("/api/order/confirm",{method:"POST",headers:authHeaders(),body:JSON.stringify({out_trade_no:ono})});

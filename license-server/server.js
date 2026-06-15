@@ -533,6 +533,37 @@ app.get("/api/billing/stats", apiLimiter, adminOrApiKey("manage"), async (_req, 
   res.json({ code: 200, success: true, data: { total: total.c, unused: unused.c, used: used.c } });
 });
 
+// 用已导入账单核验所有「待确认」订单:订单号命中未使用且金额达标的收款 → 自动发卡。
+// body.preview=true 只返回匹配情况不发卡。
+app.post("/api/order/reconcile", apiLimiter, adminOrApiKey("manage"), async (req, res) => {
+  const preview = !!(req.body || {}).preview;
+  const pend = await all(`SELECT * FROM orders WHERE status=0 ORDER BY id DESC`);
+  const matches = [];
+  for (const o of pend) {
+    const txn = await get(`SELECT * FROM paid_txns WHERE txn_no=? AND used=0`, [String(o.out_trade_no || "").trim()]);
+    if (!txn) continue;
+    if (Number(txn.amount) + 1e-6 < Number(o.money || 0)) continue;
+    matches.push({ order: o, out_trade_no: o.out_trade_no, plan_code: o.plan_code, money: o.money, paid: txn.amount });
+  }
+  let issued = 0;
+  if (!preview) {
+    for (const m of matches) {
+      const o = m.order;
+      const planRow = await get(`SELECT prefix FROM plans WHERE code=?`, [o.plan_code]);
+      const key = await genUniqueKey((planRow && planRow.prefix) || "VPRO");
+      await run(`INSERT INTO license_keys(license_key, product_id, status, duration_days, note) VALUES(?, 'PROD001', 0, ?, ?)`,
+        [key, o.days, "账单核验发卡 " + o.out_trade_no]);
+      await run(`UPDATE orders SET status=1, license_key=?, paid_at=? WHERE id=?`, [key, nowIso(), o.id]);
+      await run(`UPDATE paid_txns SET used=1, used_order=? WHERE txn_no=?`, [String(o.out_trade_no).trim(), String(o.out_trade_no).trim()]);
+      issued++;
+    }
+  }
+  res.json({
+    code: 200, success: true,
+    data: { pending: pend.length, matched: matches.length, issued, list: matches.map(m => ({ out_trade_no: m.out_trade_no, money: m.money, paid: m.paid })).slice(0, 100) },
+  });
+});
+
 // 确认到账(后台)：核对到账后发卡
 app.post("/api/order/confirm", apiLimiter, adminOrApiKey("manage"), async (req, res) => {
   const order = await get(`SELECT * FROM orders WHERE out_trade_no=?`, [(req.body || {}).out_trade_no || ""]);
