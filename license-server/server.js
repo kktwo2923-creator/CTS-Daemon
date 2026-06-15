@@ -478,8 +478,12 @@ app.post("/api/order/submit", verifyLimiter, async (req, res) => {
   if (!plan) return res.json({ code: 404, success: false, message: "套餐不存在" });
   const exist = await get(`SELECT * FROM orders WHERE out_trade_no=?`, [order_no]);
   if (exist && exist.status === 1) {
-    const key = await ensureOrderKey(exist); // 原卡被删则补发新卡
-    return res.json({ code: 200, success: true, message: "该订单已发卡", data: { license_key: key } });
+    if (exist.license_key) {
+      const ok = await get(`SELECT 1 FROM license_keys WHERE license_key=?`, [exist.license_key]);
+      if (ok) return res.json({ code: 200, success: true, message: "该订单已发卡", data: { license_key: exist.license_key } });
+    }
+    // 卡密已被卖家删除 → 审核未通过(不再补发)
+    return res.json({ code: 403, success: false, message: "审核未通过：该订单的卡密已被卖家撤销，如有疑问请联系卖家" });
   }
 
   // 自动核验：付款单号匹配已导入账单里「未使用、金额达标」的收款 → 直接发卡
@@ -616,8 +620,12 @@ app.post("/api/order/query", verifyLimiter, async (req, res) => {
   const order = await get(`SELECT * FROM orders WHERE out_trade_no=?`, [(req.body || {}).out_trade_no || ""]);
   if (!order) return res.json({ code: 404, success: false, message: "未查到该订单，请确认订单号是否正确" });
   if (order.status === 1) {
-    const key = await ensureOrderKey(order); // 原卡被删则补发新卡
-    return res.json({ code: 200, success: true, data: { license_key: key, days: order.days } });
+    if (order.license_key) {
+      const exists = await get(`SELECT 1 FROM license_keys WHERE license_key=?`, [order.license_key]);
+      if (exists) return res.json({ code: 200, success: true, data: { license_key: order.license_key, days: order.days } });
+    }
+    // 卡密已被卖家删除 → 审核未通过(不再补发)
+    return res.json({ code: 403, success: false, message: "审核未通过：该订单的卡密已被卖家撤销，如有疑问请联系卖家" });
   }
   res.json({ code: 202, success: false, message: "卖家尚未确认到账，请稍后用此单号再查；若已付款较久请联系卖家" });
 });
