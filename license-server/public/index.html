@@ -362,10 +362,13 @@ async function reconcile(){
   if(d.matched===0){ alert(`共 ${d.orders} 笔订单,没有与账单对上的。\n可能:账单未导入最新 / 买家填的单号与账单「交易单号」不一致。`); return; }
   const sample=(d.list||[]).slice(0,15).map(m=>`${m.out_trade_no}  ¥${m.paid}  ${m.status==1?'已发卡':'待发卡'}`).join("\n");
   const head=`共 ${d.orders} 笔订单,${d.matched} 笔与账单匹配(待发卡 ${d.pendingMatched} 笔,已发卡 ${d.doneMatched} 笔):\n\n${sample}${d.matched>15?"\n…":""}`;
-  if(d.pendingMatched===0){ alert(head+`\n\n这些都已发过卡,无需操作。`); return; }
-  if(!confirm(head+`\n\n确认给其中【待发卡的 ${d.pendingMatched} 笔】自动发卡?`)) return;
+  if(d.pendingMatched===0){
+    if(!confirm(head+`\n\n这些都已发过卡。是否把对应的 ${d.doneMatched} 笔账单标记为「已用」归账?`)) return;
+  } else {
+    if(!confirm(head+`\n\n确认给【待发卡的 ${d.pendingMatched} 笔】自动发卡?(已发卡的 ${d.doneMatched} 笔会一并归账)`)) return;
+  }
   const j=await api("/api/order/reconcile",{method:"POST",headers:authHeaders(),body:JSON.stringify({})});
-  if(j.success){ toast(`已核验发卡 ${j.data.issued} 笔`); loadOrders(); loadStats(); loadList(); loadBillStat(); }
+  if(j.success){ toast(`已核验:发卡 ${j.data.issued} 笔,已发卡归账 ${j.data.linked||0} 笔`); loadOrders(); loadStats(); loadList(); loadBillStat(); }
   else toast(j.message||"失败");
 }
 async function confirmOrder(ono){

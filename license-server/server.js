@@ -545,17 +545,23 @@ app.post("/api/order/reconcile", apiLimiter, adminOrApiKey("manage"), async (req
     if (Number(txn.amount) + 1e-6 < Number(o.money || 0)) continue;
     matches.push({ order: o, out_trade_no: o.out_trade_no, money: o.money, paid: txn.amount, status: o.status });
   }
-  let issued = 0;
+  let issued = 0, linked = 0;
   if (!preview) {
     for (const m of matches) {
-      if (m.order.status === 1) continue; // 已发卡的不重复发
       const o = m.order;
+      const no = String(o.out_trade_no).trim();
+      if (o.status === 1) {
+        // 已发卡:把对应账单归账为「已用」,不重复发卡
+        const r = await run(`UPDATE paid_txns SET used=1, used_order=? WHERE txn_no=? AND used=0`, [no, no]);
+        if (r.rowsAffected) linked++;
+        continue;
+      }
       const planRow = await get(`SELECT prefix FROM plans WHERE code=?`, [o.plan_code]);
       const key = await genUniqueKey((planRow && planRow.prefix) || "VPRO");
       await run(`INSERT INTO license_keys(license_key, product_id, status, duration_days, note) VALUES(?, 'PROD001', 0, ?, ?)`,
         [key, o.days, "账单核验发卡 " + o.out_trade_no]);
       await run(`UPDATE orders SET status=1, license_key=?, paid_at=? WHERE id=?`, [key, nowIso(), o.id]);
-      await run(`UPDATE paid_txns SET used=1, used_order=? WHERE txn_no=?`, [String(o.out_trade_no).trim(), String(o.out_trade_no).trim()]);
+      await run(`UPDATE paid_txns SET used=1, used_order=? WHERE txn_no=?`, [no, no]);
       issued++;
     }
   }
@@ -564,7 +570,7 @@ app.post("/api/order/reconcile", apiLimiter, adminOrApiKey("manage"), async (req
   res.json({
     code: 200, success: true,
     data: {
-      orders: orders.length, matched: matches.length, pendingMatched, doneMatched, issued,
+      orders: orders.length, matched: matches.length, pendingMatched, doneMatched, issued, linked,
       list: matches.map(m => ({ out_trade_no: m.out_trade_no, money: m.money, paid: m.paid, status: m.status })).slice(0, 200),
     },
   });
