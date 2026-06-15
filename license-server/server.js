@@ -533,21 +533,22 @@ app.get("/api/billing/stats", apiLimiter, adminOrApiKey("manage"), async (_req, 
   res.json({ code: 200, success: true, data: { total: total.c, unused: unused.c, used: used.c } });
 });
 
-// 用已导入账单核验所有「待确认」订单:订单号命中未使用且金额达标的收款 → 自动发卡。
-// body.preview=true 只返回匹配情况不发卡。
+// 用已导入账单核验「所有」订单:订单号命中未使用且金额达标的收款即视为匹配。
+// 未发卡的(status!=1)自动发卡;已发卡的只在结果里标记,不重复发。body.preview=true 只预览。
 app.post("/api/order/reconcile", apiLimiter, adminOrApiKey("manage"), async (req, res) => {
   const preview = !!(req.body || {}).preview;
-  const pend = await all(`SELECT * FROM orders WHERE status=0 ORDER BY id DESC`);
+  const orders = await all(`SELECT * FROM orders ORDER BY id DESC`);
   const matches = [];
-  for (const o of pend) {
+  for (const o of orders) {
     const txn = await get(`SELECT * FROM paid_txns WHERE txn_no=? AND used=0`, [String(o.out_trade_no || "").trim()]);
     if (!txn) continue;
     if (Number(txn.amount) + 1e-6 < Number(o.money || 0)) continue;
-    matches.push({ order: o, out_trade_no: o.out_trade_no, plan_code: o.plan_code, money: o.money, paid: txn.amount });
+    matches.push({ order: o, out_trade_no: o.out_trade_no, money: o.money, paid: txn.amount, status: o.status });
   }
   let issued = 0;
   if (!preview) {
     for (const m of matches) {
+      if (m.order.status === 1) continue; // 已发卡的不重复发
       const o = m.order;
       const planRow = await get(`SELECT prefix FROM plans WHERE code=?`, [o.plan_code]);
       const key = await genUniqueKey((planRow && planRow.prefix) || "VPRO");
@@ -558,9 +559,14 @@ app.post("/api/order/reconcile", apiLimiter, adminOrApiKey("manage"), async (req
       issued++;
     }
   }
+  const pendingMatched = matches.filter(m => m.status !== 1).length;
+  const doneMatched = matches.filter(m => m.status === 1).length;
   res.json({
     code: 200, success: true,
-    data: { pending: pend.length, matched: matches.length, issued, list: matches.map(m => ({ out_trade_no: m.out_trade_no, money: m.money, paid: m.paid })).slice(0, 100) },
+    data: {
+      orders: orders.length, matched: matches.length, pendingMatched, doneMatched, issued,
+      list: matches.map(m => ({ out_trade_no: m.out_trade_no, money: m.money, paid: m.paid, status: m.status })).slice(0, 200),
+    },
   });
 });
 
