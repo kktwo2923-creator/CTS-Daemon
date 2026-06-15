@@ -620,8 +620,9 @@ app.post("/api/order/query", verifyLimiter, async (req, res) => {
 app.get("/api/order/list", apiLimiter, adminOrApiKey("manage"), async (req, res) => {
   const page = Math.max(parseInt(req.query.page) || 1, 1);
   const limit = Math.min(Math.max(parseInt(req.query.limit) || 50, 1), 500);
-  const rows = await all(`SELECT out_trade_no, plan_code, days, money, pay_type, status, license_key, contact, note, created_at, paid_at
-    FROM orders ORDER BY id DESC LIMIT ? OFFSET ?`, [limit, (page - 1) * limit]);
+  const rows = await all(`SELECT o.out_trade_no, o.plan_code, o.days, o.money, o.pay_type, o.status, o.license_key, o.contact, o.note, o.created_at, o.paid_at,
+      (SELECT lk.note FROM license_keys lk WHERE lk.license_key=o.license_key) AS key_note
+    FROM orders o ORDER BY o.id DESC LIMIT ? OFFSET ?`, [limit, (page - 1) * limit]);
   const total = await get(`SELECT COUNT(*) AS c FROM orders`);
   const paid = await get(`SELECT COUNT(*) AS c FROM orders WHERE status=1`);
   res.json({ code: 200, success: true, data: { list: rows, total: total ? total.c : 0, paid: paid ? paid.c : 0, page, limit } });

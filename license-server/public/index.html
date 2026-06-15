@@ -343,7 +343,7 @@ async function loadOrders(){
       <td>¥${o.money||''}</td>
       <td class="muted">${o.contact||'-'}</td>
       <td class="muted">${o.note||'-'}</td>
-      <td><span class="pill ${o.status==1?'s1':'s0'}">${o.status==1?'已发卡':'待确认'}</span></td>
+      <td><span class="pill ${o.status==1?'s1':'s0'}">${o.status==1?('已发卡 · '+(/收款码/.test(o.key_note||'')?'人工':(o.key_note?'自动':'人工'))):'待确认'}</span></td>
       <td class="key">${o.license_key?o.license_key+` <button class="sm ghost" onclick="copy('${o.license_key}')">复制</button>`:'-'}</td>
       <td class="muted">${cn(o.paid_at||o.created_at)}</td>
       <td>${o.status==1?'':`<button class="sm" onclick="confirmOrder('${ono}')">确认发卡</button>`}
